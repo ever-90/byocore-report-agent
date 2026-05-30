@@ -40,6 +40,10 @@ def _yesterday_kst() -> str:
     return (now_kst.date() - datetime.timedelta(days=1)).isoformat()
 
 
+def _today_kst() -> datetime.date:
+    return datetime.datetime.now(KST).date()
+
+
 def _money(amount_str: str, currency: str = "KRW") -> str:
     """금액 문자열 → 사람용 표기. KRW 는 '₩' 접두, 그 외는 '값 통화'."""
     try:
@@ -161,6 +165,153 @@ def _citation_line() -> str:
     return f"│ 핵심 인용률(Top-100): {rate_disp}"
 
 
+# ===========================================================================
+# 주간 리포트 (일간 헬퍼 _median/_money/geo recent_unbiased 재사용)
+# ===========================================================================
+def _collect_week(dates: list) -> list:
+    """날짜 리스트의 일별 net/주문수/통화를 collect_sales로 수집(READ-ONLY)."""
+    rows = []
+    for d in dates:
+        ds = d.isoformat()
+        r = cafe24_sales.collect_sales(ds, ds)
+        rows.append({
+            "date": ds,
+            "net": Decimal(r["net_payment_amount"]),
+            "orders": r.get("order_count", 0),
+            "currency": r.get("currency", "KRW"),
+        })
+    return rows
+
+
+def _pct_vs(this_sum: Decimal, prev_sum: Decimal) -> str:
+    """전주比 텍스트. 전주 합계 0 이하면 비교 불가."""
+    if prev_sum <= 0:
+        return "전주 데이터 없음"
+    pct = (this_sum - prev_sum) / prev_sum * Decimal(100)
+    sign = "+" if pct >= 0 else "-"
+    return f"전주比 {sign}{abs(pct):.0f}%"
+
+
+def _weekly_citation_text(recent) -> str:
+    """주간 인용 줄. None=조회실패, <2=누적 중, 그 외 건수 변화(▲▼/유지)."""
+    if recent is None:
+        return "인용 조회 실패"
+    if len(recent) < 2:
+        return "인용 누적 중"
+    cur, prev = recent[0]["citation_count"], recent[1]["citation_count"]
+    if cur == prev:
+        return f"인용 {cur}건 유지"
+    return f"인용 {prev}건→{cur}건 {'▲' if cur > prev else '▼'}"
+
+
+def _weekly_issues_text(active: list, recent) -> str:
+    """
+    Top 이슈 3 자동 추출: 주간 median±30% 이탈일 + 인용 변화. 점수순 상위 3, 없으면 특이사항 없음.
+    (최고/최저일은 별도 줄에 표시하므로 이슈 중복 제외)
+    """
+    cands = []  # (score: Decimal, text)
+    nets = [r["net"] for r in active]
+    if nets:
+        med = _median(nets)
+        if med > 0:
+            for r in active:
+                dev = (r["net"] - med) / med * Decimal(100)
+                if abs(dev) > Decimal(30):
+                    sign = "+" if dev >= 0 else "-"
+                    cands.append((abs(dev), f"{r['date'][5:]} {sign}{abs(dev):.0f}%"))
+    if recent and len(recent) >= 2:
+        cur, prev = recent[0]["citation_count"], recent[1]["citation_count"]
+        if cur != prev:
+            score = Decimal(abs(cur - prev)) / Decimal(max(prev, 1)) * Decimal(100)
+            cands.append((score, f"인용{prev}→{cur}{'▲' if cur > prev else '▼'}"))
+    if not cands:
+        return "이슈: 특이사항 없음"
+    cands.sort(key=lambda t: t[0], reverse=True)
+    return "이슈: " + " · ".join(t[1] for t in cands[:3])
+
+
+def _assemble_with_limit(parts: list, limit: int = KAKAO_TEXT_LIMIT) -> str:
+    """
+    parts: [(priority, line)]. priority 0=보호(항상 유지), 그 외는 숫자 클수록 먼저 잘림.
+    총 길이 > limit 면 우선순위 낮은(숫자 큰) 줄부터 제거. 출력은 원래 순서 유지.
+    """
+    kept = list(parts)
+
+    def total(ps):
+        return len("\n".join(p[1] for p in ps))
+
+    while total(kept) > limit:
+        droppable = [i for i, (pr, _) in enumerate(kept) if pr > 0]
+        if not droppable:
+            break
+        idx = max(droppable, key=lambda i: (kept[i][0], i))   # 최저 우선순위, 동률이면 뒤쪽
+        kept.pop(idx)
+    return "\n".join(p[1] for p in kept)
+
+
+def build_weekly_report(today: str | None = None) -> str:
+    """
+    주간 리포트 생성. 기준일(today, 미지정=오늘 KST) 직전 7일(어제~7일전) vs 전주 7일. (READ-ONLY)
+    구성: net 합계+전주比 / 일평균+최고·최저일 / 인용 변화 or 누적중 / Top이슈3 / "상세는 대시보드".
+    전주比·인용·이슈는 각각 독립 try, 200자 초과 시 우선순위 낮은 줄부터 트림.
+    """
+    base = datetime.date.fromisoformat(today) if today else _today_kst()
+    this_dates = [base - datetime.timedelta(days=i) for i in range(7, 0, -1)]    # base-7..base-1
+    prev_dates = [base - datetime.timedelta(days=i) for i in range(14, 7, -1)]   # base-14..base-8
+
+    this_rows = _collect_week(this_dates)   # CORE — 실패 시 리포트 불가(매출이 핵심)
+    currency = next((r["currency"] for r in this_rows if r.get("currency")), "KRW")
+    net_sum = sum((r["net"] for r in this_rows), Decimal("0"))
+    active = [r for r in this_rows if r["orders"] > 0]
+    avg = (net_sum / Decimal(len(this_rows))).quantize(Decimal("1")) if this_rows else Decimal("0")
+    period = f"{this_dates[0].strftime('%m-%d')}~{this_dates[-1].strftime('%m-%d')}"
+
+    # 전주比 (독립 try) — 전주 수집 실패해도 이번주 net 은 표시
+    try:
+        prev_rows = _collect_week(prev_dates)
+        prev_sum = sum((r["net"] for r in prev_rows), Decimal("0"))
+        prev_txt = _pct_vs(net_sum, prev_sum)
+    except Exception:
+        prev_txt = "전주比 실패"
+
+    # 인용 (독립 try, 1회 조회 후 인용줄/이슈 공용)
+    try:
+        recent_cit = geo_citation.recent_unbiased_citations(2)
+    except Exception:
+        recent_cit = None
+    cit_line = _weekly_citation_text(recent_cit)
+
+    # Top 이슈 (독립 try)
+    try:
+        issues_line = _weekly_issues_text(active, recent_cit)
+    except Exception:
+        issues_line = "이슈: 산출 실패"
+
+    if active:
+        hi = max(active, key=lambda r: r["net"])
+        lo = min(active, key=lambda r: r["net"])
+        hilo = f"최고 {hi['date'][5:]} · 최저 {lo['date'][5:]}"
+    else:
+        hilo = "데이터 없음"
+
+    parts = [
+        (0, f"┌ BYOCORE 주간 ({period})"),
+        (0, f"│ net {_money(net_sum, currency)} ({prev_txt})"),
+        (4, f"│ 일평균 {_money(avg, currency)} · {hilo}"),
+        (3, f"│ {cit_line}"),
+        (2, f"│ {issues_line}"),
+        (0, "└ 상세는 대시보드"),
+    ]
+    return _assemble_with_limit(parts, KAKAO_TEXT_LIMIT)
+
+
+def send_weekly_report(today: str | None = None) -> dict:
+    """주간 리포트 생성 후 카카오 '나에게 보내기'로 발송."""
+    text = build_weekly_report(today)
+    result = kakao_send.send_text(text, link_url=_report_link(), button_title="BYOCORE")
+    return {"text": text, "send_result": result}
+
+
 def _report_link() -> str:
     """카카오 메모 버튼 링크. 브랜드 도메인(REDIRECT_URI) 우선, 없으면 기본 링크."""
     return config.get("CAFE24_REDIRECT_URI") or kakao_send.DEFAULT_LINK
@@ -173,30 +324,13 @@ def send_daily_report(date: str) -> dict:
     return {"date": date, "text": text, "send_result": result}
 
 
-def _cli() -> None:
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # Windows 콘솔 대비
-    except Exception:
-        pass
-
-    date = sys.argv[1] if len(sys.argv) > 1 else _yesterday_kst()
-
-    # 1) 수집 + 리포트 생성 (Cafe24 GET) — 발송 전에 미리보기
-    try:
-        text = build_daily_report(date)
-    except requests.HTTPError as e:
-        status = e.response.status_code if e.response is not None else "?"
-        print(f"[오류] Cafe24 수집 실패(HTTP {status}). "
-              f"토큰 만료 시 'python -m src.cafe24_auth authorize' 로 재인가하세요.")
-        raise
-
+def _preview_and_send(text: str) -> None:
+    """미리보기 출력 + 길이 점검 + 카카오 '나에게 보내기' 발송(공용)."""
     print("----- 리포트 미리보기 -----")
     print(text)
     print(f"(본문 {len(text)}자 / 카카오 한도 {KAKAO_TEXT_LIMIT}자)")
     if len(text) > KAKAO_TEXT_LIMIT:
-        print(f"[주의] 본문이 {KAKAO_TEXT_LIMIT}자를 초과 — 분할 발송은 다음 단계 과제.")
-
-    # 2) 카카오 '나에게 보내기' 발송
+        print(f"[주의] 본문이 {KAKAO_TEXT_LIMIT}자를 초과.")
     print("----- 카카오 발송 -----")
     try:
         result = kakao_send.send_text(text, link_url=_report_link(), button_title="BYOCORE")
@@ -206,6 +340,39 @@ def _cli() -> None:
               f"토큰 만료/동의 시 'python -m src.kakao_auth authorize' 로 재인가하세요.")
         raise
     print(f"발송 성공: {result}")
+
+
+def _cli() -> None:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # Windows 콘솔 대비
+    except Exception:
+        pass
+
+    args = sys.argv[1:]
+
+    # 주간: python -m src.reporter weekly [YYYY-MM-DD]
+    if args and args[0].lower() == "weekly":
+        base = args[1] if len(args) > 1 else None
+        try:
+            text = build_weekly_report(base)
+        except requests.HTTPError as e:
+            status = e.response.status_code if e.response is not None else "?"
+            print(f"[오류] Cafe24 수집 실패(HTTP {status}). "
+                  f"토큰 만료 시 'python -m src.cafe24_auth authorize' 로 재인가하세요.")
+            raise
+        _preview_and_send(text)
+        return
+
+    # 일간(기본): python -m src.reporter [YYYY-MM-DD]
+    date = args[0] if args else _yesterday_kst()
+    try:
+        text = build_daily_report(date)
+    except requests.HTTPError as e:
+        status = e.response.status_code if e.response is not None else "?"
+        print(f"[오류] Cafe24 수집 실패(HTTP {status}). "
+              f"토큰 만료 시 'python -m src.cafe24_auth authorize' 로 재인가하세요.")
+        raise
+    _preview_and_send(text)
 
 
 if __name__ == "__main__":
