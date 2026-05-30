@@ -41,7 +41,19 @@ python -m src.kakao_auth       # 사용법(docstring) 출력
       - 실측: 2026-05-30 → **3.00%** (공식 (direct+indirect)/total×100, total=100 Top-100 교차검증 일치), 2026-05-25 → 73.2%(추정)
       - deps 추가: gspread, google-auth (requirements.txt)
       - 보강(2026-05-30): direct_count/indirect_count/citation_count 반환 + `recent_unbiased_citations(n)`(이상알림 건수비교용, biased 제외)
-- [ ] `market_trend`: repo 산출물(파일) 파싱 → 경쟁사 추세·Top 이슈
+- [x] `market_trend`: 경쟁동향 수집 — **구현·실측 완료 (2026-05-30)**
+      - RECON: ever-90/market-insight-byocore 커밋 트리엔 정형 경쟁동향 산출물 없음(.gitignore 보호),
+        로컬 deploy 사본에도 reports/·*_trend.json 없음 → 두 repo 간 데이터 계약 부재 확인
+      - 설계(사용자 승인): 명시적 '핸드오프 JSON 계약' 신설·문서화 (관측 스키마 위조 안 함)
+        · 위치: <MARKET_REPO_PATH>/reports/ (또는 src/reports/), config 경유(하드코딩 0)
+        · 우선순위: latest_trend.json → YYYY-MM-DD_trend.json(파일명 날짜 최댓값), 손상 시 이전본 폴백
+        · schema_version=1: {as_of, generated_at, competitors[{name,change,signal,confidence,sources}], top_issues[]}
+      - collect_market_trend(base_path=None)->dict|None, READ-ONLY(파일 읽기만)
+        · None: 경로 미설정/경로 없음/reports 없음/핸드오프 없음/전부 손상 → 리포트 "경쟁동향 미연동" 처리
+        · 정규화: signal(up/down/flat)/confidence(H/M/L, 기본 L 보수적)/sources, 18관점 교차검증→warnings
+      - 단독 실행: python -m src.collectors.market_trend [<repo경로>]
+      - 실측: .env MARKET_REPO_PATH 빈값 → None(미연동) 확인. 핸드오프 41케이스 테스트 전부 통과
+      - 연동 활성화 조건(후속): market-insight 측이 reports/latest_trend.json 생성 + .env MARKET_REPO_PATH 설정
 
 ### 리포트 / 운영
 - [~] 리포트 포맷터: **일간·주간 완료 (src/reporter.py, 2026-05-30)** — 월간만 남음
