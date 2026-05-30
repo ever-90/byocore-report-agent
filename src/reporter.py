@@ -312,6 +312,136 @@ def send_weekly_report(today: str | None = None) -> dict:
     return {"text": text, "send_result": result}
 
 
+# ===========================================================================
+# 월간 리포트 (일간/주간 헬퍼 재사용 — _collect_week / _median / _money / _weekly_issues_text)
+# ===========================================================================
+
+def _pct_month(this_sum: Decimal, prev_sum: Decimal) -> str:
+    """전월比 텍스트. 전월 합계 0 이하면 비교 불가."""
+    if prev_sum <= 0:
+        return "전월 데이터 없음"
+    pct = (this_sum - prev_sum) / prev_sum * Decimal(100)
+    sign = "+" if pct >= 0 else "-"
+    return f"전월比 {sign}{abs(pct):.0f}%"
+
+
+def _monthly_citation_text(month_cit: list) -> str:
+    """
+    월간 인용 줄. month_cit = 당월 비-biased 측정 리스트(date 내림차순).
+    0건 → "인용 누적 중", 1건 → "인용 N건 (1회)", >=2건 → 월초→월말 추세.
+    (month_cit은 date 내림차순이므로 [0]=최신, [-1]=가장 오래된)
+    """
+    if not month_cit:
+        return "인용 누적 중"
+    if len(month_cit) < 2:
+        cnt = month_cit[0]["citation_count"]
+        return f"인용 {cnt}건 (1회)"
+    first = month_cit[-1]["citation_count"]   # 가장 오래된 측정 (내림차순 → 마지막)
+    last  = month_cit[0]["citation_count"]    # 최신 측정 (내림차순 → 첫 번째)
+    if first == last:
+        return f"인용 {last}건 유지"
+    arrow = "▲" if last > first else "▼"
+    return f"인용 {first}→{last}건 {arrow}"
+
+
+def _kpi_line(net_sum: Decimal, currency: str) -> str:
+    """
+    KPI 달성률 한 줄. config.MONTHLY_SALES_TARGET 미설정이면 "KPI 목표 미설정".
+    향후 .env 에 MONTHLY_SALES_TARGET=10000000 설정 시 달성률 자동 계산.
+    READ-ONLY / 하드코딩 금지 — 목표값은 반드시 config 경유.
+    """
+    target_str = config.get("MONTHLY_SALES_TARGET")
+    if not target_str:
+        return "KPI 목표 미설정"
+    try:
+        target = Decimal(str(target_str).replace(",", ""))
+        if target <= 0:
+            return "KPI 목표 미설정"
+        rate = (net_sum / target * Decimal(100)).quantize(Decimal("1"))
+        return f"KPI {rate}% 달성 (목표 {_money(target, currency)})"
+    except (InvalidOperation, ZeroDivisionError, ValueError):
+        return "KPI 산출 실패"
+
+
+def build_monthly_report(today: str | None = None) -> str:
+    """
+    월간 리포트 생성. 기준일(today, 미지정=오늘 KST) 직전 30일 vs 전월 30일. (READ-ONLY)
+    구성: net 합계+전월比 / 일평균+최고·최저일 / KPI 달성률 / 인용 추세 / Top이슈3 / "상세는 대시보드".
+    collect_sales 최대 60회(이번달30+전월30) — 각 호출은 cafe24_sales 내 backoff 자동 적용.
+    전월比·KPI·인용·이슈는 각각 독립 try, 200자 초과 시 우선순위 낮은 줄부터 트림.
+    우선순위(높을수록 먼저 제거): 일평균(5) > KPI(4) > 인용(3) > 이슈(2), 제목·net·푸터(0) 보호.
+    """
+    base = datetime.date.fromisoformat(today) if today else _today_kst()
+    this_dates = [base - datetime.timedelta(days=i) for i in range(30, 0, -1)]   # base-30..base-1
+    prev_dates = [base - datetime.timedelta(days=i) for i in range(60, 30, -1)]  # base-60..base-31
+
+    # CORE — 이번달 30일 수집. 실패 시 월간 리포트 자체가 불가(매출이 핵심).
+    this_rows = _collect_week(this_dates)
+    currency = next((r["currency"] for r in this_rows if r.get("currency")), "KRW")
+    net_sum  = sum((r["net"] for r in this_rows), Decimal("0"))
+    active   = [r for r in this_rows if r["orders"] > 0]
+    avg      = (net_sum / Decimal(len(this_rows))).quantize(Decimal("1")) if this_rows else Decimal("0")
+    period   = f"{this_dates[0].strftime('%m-%d')}~{this_dates[-1].strftime('%m-%d')}"
+
+    # 전월比 (독립 try) — 전월 수집 실패해도 이번달 net 은 표시
+    try:
+        prev_rows = _collect_week(prev_dates)
+        prev_sum  = sum((r["net"] for r in prev_rows), Decimal("0"))
+        prev_txt  = _pct_month(net_sum, prev_sum)
+    except Exception:
+        prev_txt = "전월比 실패"
+
+    # 최고/최저 매출일 — 활동일(주문 1건+)만 후보
+    if active:
+        hi   = max(active, key=lambda r: r["net"])
+        lo   = min(active, key=lambda r: r["net"])
+        hilo = f"최고 {hi['date'][5:]} · 최저 {lo['date'][5:]}"
+    else:
+        hilo = "데이터 없음"
+
+    # 인용 (독립 try) — 당월 범위에 포함된 비-biased 측정만
+    month_cit: list = []
+    try:
+        this_date_strs = {d.isoformat() for d in this_dates}
+        all_cit   = geo_citation.recent_unbiased_citations(30)   # 최근 30개 비-biased
+        month_cit = [c for c in all_cit if c["date"] in this_date_strs]
+        cit_line  = _monthly_citation_text(month_cit)
+    except Exception:
+        cit_line = "인용 조회 실패"
+
+    # KPI (독립 try) — config.MONTHLY_SALES_TARGET 경유, 미설정이면 "목표 미설정"
+    try:
+        kpi_txt = _kpi_line(net_sum, currency)
+    except Exception:
+        kpi_txt = "KPI 산출 실패"
+
+    # Top 이슈 (독립 try) — _weekly_issues_text 재사용, 당월 비-biased 2개+ 있으면 인용변화 포함
+    try:
+        issues_cit  = month_cit if len(month_cit) >= 2 else None
+        issues_line = _weekly_issues_text(active, issues_cit)
+    except Exception:
+        issues_line = "이슈: 산출 실패"
+
+    # 200자 트림 가드
+    parts = [
+        (0, f"┌ BYOCORE 월간 ({period})"),
+        (0, f"│ net {_money(net_sum, currency)} ({prev_txt})"),
+        (5, f"│ 일평균 {_money(avg, currency)} · {hilo}"),
+        (4, f"│ {kpi_txt}"),
+        (3, f"│ {cit_line}"),
+        (2, f"│ {issues_line}"),
+        (0, "└ 상세는 대시보드"),
+    ]
+    return _assemble_with_limit(parts, KAKAO_TEXT_LIMIT)
+
+
+def send_monthly_report(today: str | None = None) -> dict:
+    """월간 리포트 생성 후 카카오 '나에게 보내기'로 발송."""
+    text = build_monthly_report(today)
+    result = kakao_send.send_text(text, link_url=_report_link(), button_title="BYOCORE")
+    return {"text": text, "send_result": result}
+
+
 def _report_link() -> str:
     """카카오 메모 버튼 링크. 브랜드 도메인(REDIRECT_URI) 우선, 없으면 기본 링크."""
     return config.get("CAFE24_REDIRECT_URI") or kakao_send.DEFAULT_LINK
@@ -349,6 +479,19 @@ def _cli() -> None:
         pass
 
     args = sys.argv[1:]
+
+    # 월간: python -m src.reporter monthly [YYYY-MM-DD]
+    if args and args[0].lower() == "monthly":
+        base = args[1] if len(args) > 1 else None
+        try:
+            text = build_monthly_report(base)
+        except requests.HTTPError as e:
+            status = e.response.status_code if e.response is not None else "?"
+            print(f"[오류] Cafe24 수집 실패(HTTP {status}). "
+                  f"토큰 만료 시 'python -m src.cafe24_auth authorize' 로 재인가하세요.")
+            raise
+        _preview_and_send(text)
+        return
 
     # 주간: python -m src.reporter weekly [YYYY-MM-DD]
     if args and args[0].lower() == "weekly":

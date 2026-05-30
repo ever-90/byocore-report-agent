@@ -56,17 +56,18 @@ python -m src.kakao_auth       # 사용법(docstring) 출력
       - 연동 활성화 조건(후속): market-insight 측이 reports/latest_trend.json 생성 + .env MARKET_REPO_PATH 설정
 
 ### 리포트 / 운영
-- [~] 리포트 포맷터: **일간·주간 완료 (src/reporter.py, 2026-05-30)** — 월간만 남음
+- [x] 리포트 포맷터: **일간·주간·월간 완료 (src/reporter.py, 2026-05-30)**
       - build_daily_report(date) / send_daily_report(date), 단독실행 시 어제(KST) 생성→발송
       - net 중심 박스 텍스트 + 카카오 '나에게 보내기' **실발송 성공(result_code=0)**, 본문 139자
       - [x] 일간에 **GEO 핵심 인용률 통합** (2026-05-30): 매출(net) 블록 아래 줄, is_biased→"(추정)", None→"측정 대기", **독립 try**(GEO 실패해도 매출 정상 발송), 실발송 159자
       - [x] 일간 **이상알림 통합** (2026-05-30): 매출 7일중앙값比 ±30%(⚠️+편차%) / 인용 건수변화(비-biased 2개 비교, ▲▼/유지), 각 독립 try, 실발송 179자
       - [x] **주간 리포트** (2026-05-30): build_weekly_report()/send_weekly_report() + CLI `weekly`, 직전7일vs전주, net합계+전주比 / 일평균+최고·최저일 / 인용(누적중) / Top이슈3(median±30%+인용변화), **200자 우선순위 트림 가드**, 독립 try, 실발송 146자
-      - [ ] 월간(종합+KPI)
+      - [x] **월간 리포트** (2026-05-30): build_monthly_report()/send_monthly_report() + CLI `monthly`, 직전30일vs전월30일, net합계+전월比 / 일평균+최고·최저일 / KPI달성률(config경유, 미설정→"목표 미설정") / 인용추세(비-biased 당월만) / Top이슈3(median±30%), **200자 우선순위 트림 가드**(일평균5>KPI4>인용3>이슈2, 제목·net·푸터 보호), 독립 try, 실발송 179자
+        · KPI 구조: MONTHLY_SALES_TARGET(.env) 설정 시 달성률 자동 계산, 미설정이면 "KPI 목표 미설정"
 - [x] 이상 알림 임계치 정의 및 탐지 — 매출 ±30%(7일 median, 평균 아님) / 인용 건수변화(단일일 %비교 금지·biased 제외·2개미만 skip)
 - [ ] `schedule` 기반 스케줄러 (일/주/월 트리거)
 - [ ] 토큰 만료시각(timestamp) 추적 및 사전 갱신
-- [~] 카카오 본문 길이 초과 대응 — 주간은 **우선순위 트림 가드**, 일간은 길이 경고. (실제 분할 발송은 미구현)
+- [x] 카카오 본문 길이 초과 대응 — 일간·주간·월간 모두 **200자 우선순위 트림 가드** 적용 완료
 
 ### 비고
 - 전송 대상 확장(구성원 추가)은 RULESET R5 검토를 거친 뒤에만 진행.
