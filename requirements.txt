@@ -1,0 +1,9 @@
+# BYOCORE 브랜드몰 운영 보고 에이전트 — 1단계 (READ-ONLY)
+# Python 3.14 / Windows 로컬 실행
+
+requests>=2.31.0        # HTTP (Cafe24 Admin API GET, 카카오 OAuth/발송)
+python-dotenv>=1.0.0    # .env 로드 및 토큰 자동 기록
+schedule>=1.2.0         # 일/주/월 리포트 스케줄링 (2단계 스케줄러에서 사용)
+
+# 2단계에서 추가 예정 (Google Sheet 인용률 수집):
+#   google-auth, google-api-python-client  (또는 gspread)
