@@ -45,6 +45,8 @@ BIAS_CUTOFF = datetime.date(2026, 5, 29)   # 이 날짜 이하 = biased(과대�
 FIELD_DATE = "date"                  # A열
 FIELD_RATE = "byocore_citation_rate" # F열
 FIELD_SOV = "sov_byocore"            # J열 (별개지표)
+FIELD_DIRECT = "direct_count"        # C열 (인용 건수: 직접)
+FIELD_INDIRECT = "indirect_count"    # D열 (인용 건수: 간접)
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +167,8 @@ def collect_citation_rate(target_date: str | None = None) -> dict | None:
 
     rate = _to_float(_get_field(latest, FIELD_RATE))
     sov = _to_float(_get_field(latest, FIELD_SOV))
+    direct_cnt = int(_to_float(_get_field(latest, FIELD_DIRECT)) or 0)
+    indirect_cnt = int(_to_float(_get_field(latest, FIELD_INDIRECT)) or 0)
     is_biased = chosen_date <= BIAS_CUTOFF
 
     note = "핵심 인용률(Top-100)"
@@ -175,9 +179,46 @@ def collect_citation_rate(target_date: str | None = None) -> dict | None:
         "date": chosen_date.isoformat(),
         "citation_rate": rate,
         "sov_byocore": sov,
+        "direct_count": direct_cnt,
+        "indirect_count": indirect_cnt,
+        "citation_count": direct_cnt + indirect_cnt,
         "is_biased": is_biased,
         "sample_note": note,
     }
+
+
+def recent_unbiased_citations(n: int = 2) -> list[dict]:
+    """
+    최근 n개 '비-biased'(date > 2026-05-29) 측정값을 date 내림차순으로 반환. READ-ONLY.
+    인용 '건수' 변화 비교용(단일일 % 비교 금지 원칙). 동일 날짜 중복은 1개로 정리.
+    각 dict: {date, direct_count, indirect_count, citation_count}
+    """
+    records = _fetch_records()
+    rows: list[tuple[datetime.date, dict]] = []
+    for r in records:
+        d = _parse_date(_get_field(r, FIELD_DATE))
+        if d is None or d <= BIAS_CUTOFF:   # biased 데이터는 비교에서 제외
+            continue
+        direct_cnt = int(_to_float(_get_field(r, FIELD_DIRECT)) or 0)
+        indirect_cnt = int(_to_float(_get_field(r, FIELD_INDIRECT)) or 0)
+        rows.append((d, {
+            "date": d.isoformat(),
+            "direct_count": direct_cnt,
+            "indirect_count": indirect_cnt,
+            "citation_count": direct_cnt + indirect_cnt,
+        }))
+    rows.sort(key=lambda t: t[0], reverse=True)
+
+    out: list[dict] = []
+    seen: set[datetime.date] = set()
+    for d, payload in rows:
+        if d in seen:
+            continue
+        seen.add(d)
+        out.append(payload)
+        if len(out) >= n:
+            break
+    return out
 
 
 # ---------------------------------------------------------------------------

@@ -6,8 +6,9 @@ reporter.py — 일간 운영 리포트 생성 + 카카오 '나에게 보내기'
 - 데이터 소스를 변경하지 않음.
 
 [구성]
-  collect_sales(어제 KST) + geo_citation(최신 인용률) → net 중심 텍스트 → kakao_send.send_text 발송.
-  GEO 조회는 독립 try — 실패/측정대기여도 매출 리포트는 정상 발송.
+  collect_sales(어제 KST) + geo_citation(인용률) + 이상알림(매출 7일중앙값比 / 인용 건수변화)
+  → net 중심 텍스트 → kakao_send.send_text 발송.
+  GEO·이상알림은 각각 독립 try — 실패/측정대기여도 매출 리포트는 정상 발송.
 
 [함수]
 - build_daily_report(date) -> str   : 리포트 텍스트 생성(수집 포함, 발송 안 함)
@@ -73,8 +74,71 @@ def build_daily_report(date: str) -> str:
     else:
         lines.append(f"│ 주문: {r['net_order_count']}건")
     lines.append(f"│ 구매자: {r['unique_buyers']}명")
-    lines.append("└ (이상알림은 다음 단계)")
+    # 이상알림 (각각 독립 try — 실패해도 매출 리포트는 정상 발송)
+    lines.append(f"│ {_sales_anomaly_text(date, Decimal(r['net_payment_amount']))}")
+    lines.append(f"└ {_citation_anomaly_text()}")
     return "\n".join(lines)
+
+
+def _median(values: list) -> Decimal:
+    """정렬 후 중앙값(짝수면 두 중앙값 평균). Decimal 정밀 유지. (평균 아님 — 이벤트일 강건)"""
+    s = sorted(values)
+    n = len(s)
+    mid = n // 2
+    if n % 2 == 1:
+        return s[mid]
+    return (s[mid - 1] + s[mid]) / 2
+
+
+def _baseline_nets(date: str, days: int = 7) -> list:
+    """date 직전 `days`일의 net 매출(활동일=order_count>0)을 collect_sales 일별 호출로 수집. READ-ONLY."""
+    d0 = datetime.date.fromisoformat(date)
+    nets = []
+    for i in range(1, days + 1):
+        dd = (d0 - datetime.timedelta(days=i)).isoformat()
+        rr = cafe24_sales.collect_sales(dd, dd)
+        if rr.get("order_count", 0) > 0:          # 활동일만 기준에 포함
+            nets.append(Decimal(rr["net_payment_amount"]))
+    return nets
+
+
+def _sales_anomaly_text(date: str, yest_net: Decimal) -> str:
+    """
+    어제 net vs 직전 7일 net '중앙값'(이벤트일 강건) 비교. ±30% 벗어나면 ⚠️ + 편차%.
+    독립 try: 실패/데이터부족(7일 미만)이면 알림 skip 메시지(매출 리포트는 정상 발송).
+    """
+    try:
+        baseline = _baseline_nets(date, days=7)
+    except Exception:
+        return "매출 점검: 비교 실패"
+    if len(baseline) < 7:
+        return "매출 점검: 비교 데이터 부족"
+    median = _median(baseline)
+    if median <= 0:
+        return "매출 점검: 비교 데이터 부족"
+    dev = (yest_net - median) / median * Decimal(100)
+    sign = "+" if dev >= 0 else "-"
+    body = f"매출 7일중앙값比 {sign}{abs(dev):.0f}%"
+    return f"⚠️ {body}" if abs(dev) > Decimal(30) else body
+
+
+def _citation_anomaly_text() -> str:
+    """
+    인용 '건수'(direct+indirect) 변화. 최근 2개 비-biased 측정 비교(단일일 % 비교 금지, biased 제외).
+    독립 try: 실패/2개 미만이면 알림 skip 메시지.
+    """
+    try:
+        recent = geo_citation.recent_unbiased_citations(2)
+    except Exception:
+        return "인용 점검: 비교 실패"
+    if len(recent) < 2:
+        return "인용 점검: 비교 데이터 부족"
+    cur = recent[0]["citation_count"]
+    prev = recent[1]["citation_count"]
+    if cur == prev:
+        return f"인용 {cur}건 유지"
+    arrow = "▲" if cur > prev else "▼"
+    return f"인용 {prev}건→{cur}건 {arrow}"
 
 
 def _citation_line() -> str:

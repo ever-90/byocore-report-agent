@@ -40,6 +40,7 @@ python -m src.kakao_auth       # 사용법(docstring) 출력
       - `is_biased`(date<=2026-05-29 과대계상→"(추정)"), 반환 {date, citation_rate, sov_byocore, is_biased, sample_note}
       - 실측: 2026-05-30 → **3.00%** (공식 (direct+indirect)/total×100, total=100 Top-100 교차검증 일치), 2026-05-25 → 73.2%(추정)
       - deps 추가: gspread, google-auth (requirements.txt)
+      - 보강(2026-05-30): direct_count/indirect_count/citation_count 반환 + `recent_unbiased_citations(n)`(이상알림 건수비교용, biased 제외)
 - [ ] `market_trend`: repo 산출물(파일) 파싱 → 경쟁사 추세·Top 이슈
 
 ### 리포트 / 운영
@@ -47,8 +48,9 @@ python -m src.kakao_auth       # 사용법(docstring) 출력
       - build_daily_report(date) / send_daily_report(date), 단독실행 시 어제(KST) 생성→발송
       - net 중심 박스 텍스트 + 카카오 '나에게 보내기' **실발송 성공(result_code=0)**, 본문 139자
       - [x] 일간에 **GEO 핵심 인용률 통합** (2026-05-30): 매출(net) 블록 아래 줄, is_biased→"(추정)", None→"측정 대기", **독립 try**(GEO 실패해도 매출 정상 발송), 실발송 159자
-      - [ ] 일간 이상알림 추가 / 주간(추세+Top이슈3) / 월간(종합+KPI)
-- [ ] 이상 알림 임계치 정의 및 탐지
+      - [x] 일간 **이상알림 통합** (2026-05-30): 매출 7일중앙값比 ±30%(⚠️+편차%) / 인용 건수변화(비-biased 2개 비교, ▲▼/유지), 각 독립 try, 실발송 179자
+      - [ ] 주간(추세+Top이슈3) / 월간(종합+KPI)
+- [x] 이상 알림 임계치 정의 및 탐지 — 매출 ±30%(7일 median, 평균 아님) / 인용 건수변화(단일일 %비교 금지·biased 제외·2개미만 skip)
 - [ ] `schedule` 기반 스케줄러 (일/주/월 트리거)
 - [ ] 토큰 만료시각(timestamp) 추적 및 사전 갱신
 - [ ] 카카오 본문 길이 초과 시 분할 발송 (현재 길이 경고만 추가됨)
