@@ -34,14 +34,20 @@ python -m src.kakao_auth       # 사용법(docstring) 출력
       - net 보강(2026-05-30): net_payment_amount / net_order_count / canceled_amount 추가(canceled 기준) + 정합성 교차검증
         · 실측 확인: 취소주문 3건은 payment_amount=0(미결제 취소) → net=gross, 건수만 98→95
       - TODO(후속): AOV, date_type(pay_date) 선택, 10k 초과 시 날짜분할
-- [ ] `geo_citation`: 구글시트 인용률 파싱 (google-auth / sheets API 또는 gspread 추가)
+- [x] `geo_citation`: 구글시트 핵심 인용률(Top-100) 조회 — **구현·실측 완료 (2026-05-30)**
+      - gspread + 서비스계정, 스코프 `spreadsheets.readonly`(쓰기 원천 차단), 키=config(GOOGLE_SERVICE_ACCOUNT_JSON, 기본 service_account.json)
+      - 탭 BYOCORE_GEO_SUMMARY, `byocore_citation_rate`(F)/`sov_byocore`(J), **date max 행**(upsert 대비, 물리적 마지막 아님), 데이터 없으면 None→"측정 대기"
+      - `is_biased`(date<=2026-05-29 과대계상→"(추정)"), 반환 {date, citation_rate, sov_byocore, is_biased, sample_note}
+      - 실측: 2026-05-30 → **3.00%** (공식 (direct+indirect)/total×100, total=100 Top-100 교차검증 일치), 2026-05-25 → 73.2%(추정)
+      - deps 추가: gspread, google-auth (requirements.txt)
 - [ ] `market_trend`: repo 산출물(파일) 파싱 → 경쟁사 추세·Top 이슈
 
 ### 리포트 / 운영
 - [~] 리포트 포맷터: **일간 매출 파트 완료 (src/reporter.py, 2026-05-30)**
       - build_daily_report(date) / send_daily_report(date), 단독실행 시 어제(KST) 생성→발송
       - net 중심 박스 텍스트 + 카카오 '나에게 보내기' **실발송 성공(result_code=0)**, 본문 139자
-      - [ ] 일간에 인용률·이상알림 추가 / 주간(추세+Top이슈3) / 월간(종합+KPI)
+      - [x] 일간에 **GEO 핵심 인용률 통합** (2026-05-30): 매출(net) 블록 아래 줄, is_biased→"(추정)", None→"측정 대기", **독립 try**(GEO 실패해도 매출 정상 발송), 실발송 159자
+      - [ ] 일간 이상알림 추가 / 주간(추세+Top이슈3) / 월간(종합+KPI)
 - [ ] 이상 알림 임계치 정의 및 탐지
 - [ ] `schedule` 기반 스케줄러 (일/주/월 트리거)
 - [ ] 토큰 만료시각(timestamp) 추적 및 사전 갱신

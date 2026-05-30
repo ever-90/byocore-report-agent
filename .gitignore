@@ -4,6 +4,7 @@
 !.env.example
 
 # Google 서비스 계정 키 / 자격증명 파일
+service_account.json
 *service*account*.json
 credentials*.json
 *.pem
