@@ -75,6 +75,15 @@ python -m src.kakao_auth       # 사용법(docstring) 출력
       - 독립 try: 판단 실패해도 나머지 리포트 정상 발송
       - build_daily_report → _assemble_with_limit 적용(우선순위: 취소상세5>주문/구매자4>인용률3>이상알림2>판단카드1)
       - 실발송 181자, result_code=0 ✓. 엣지케이스 5종 검증(cancel_high/geo_na/aov_low/정상/빈baseline) 전부 통과
+- [x] **콘솔 대시보드 HTML** (2026-06-01): `src/dashboard.py` → `docs/index.html` (GitHub Pages)
+      - `build_dashboard_html(date)` / `save_dashboard(date)`, CLI `python -m src.dashboard [date]`
+      - 카드 4종: net매출·핵심인용률·주문/구매자·판단카드(1줄), 최근 7일 net 막대차트(Chart.js CDN)
+      - 이상알림 배너(매출 ±30% / 인용 건수변화), 마지막 갱신 시각 footer
+      - self-contained(Chart.js CDN, 데이터 인라인), 모바일 반응형, 다크모드
+      - `<meta name="robots" content="noindex,nofollow">` 검색 노출 차단
+      - 보안: API키·토큰·서비스계정 HTML 미포함 자동 검증 통과 ✅
+      - 신규 API 호출 0 — `_collect_baseline_full` 1회로 anomaly·funnel·차트 공용
+      - 생성 결과: `docs/index.html` 4,451 bytes
 - [ ] `schedule` 기반 스케줄러 (일/주/월 트리거)
 - [ ] 토큰 만료시각(timestamp) 추적 및 사전 갱신
 - [x] 카카오 본문 길이 초과 대응 — 일간·주간·월간 모두 **200자 우선순위 트림 가드** 적용 완료
