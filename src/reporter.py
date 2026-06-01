@@ -57,31 +57,97 @@ def _money(amount_str: str, currency: str = "KRW") -> str:
 
 
 def build_daily_report(date: str) -> str:
-    """date(YYYY-MM-DD) 하루 매출 + 최신 GEO 핵심 인용률을 박스 텍스트로 생성. (READ-ONLY)"""
-    r = cafe24_sales.collect_sales(date, date)
-    currency = r["currency"]
-    net = _money(r["net_payment_amount"], currency)
-    gross = _money(r["total_payment_amount"], currency)
+    """
+    date(YYYY-MM-DD) 일간 리포트 텍스트 생성. READ-ONLY.
+    구성: 매출(net) + GEO인용률 + 주문/구매자 + 이상알림 + 판단카드(GEO×매출×퍼널프록시).
+    7일 베이스라인 1회 수집 → anomaly·funnel proxy 공용(신규 API 호출 추가 없음).
+    각 섹션 독립 try — 한 섹션 실패해도 나머지 정상 발송.
+    200자 트림 우선순위(높을수록 먼저 제거): 취소상세(5) > 주문/구매자(4) > 인용률(3) >
+      이상알림(2) > 판단카드(1). 제목·매출(net)(0) 보호.
+    """
+    # CORE — 오늘 매출. 실패 시 일간 리포트 불가.
+    r           = cafe24_sales.collect_sales(date, date)
+    currency    = r["currency"]
+    net         = _money(r["net_payment_amount"], currency)
+    gross       = _money(r["total_payment_amount"], currency)
     canceled_amt = _money(r["canceled_amount"], currency)
     canceled_cnt = r["canceled_count"]
+    yest_net    = Decimal(r["net_payment_amount"])
 
-    lines = [f"┌ BYOCORE 일간 리포트 ({date})"]
-    lines.append(f"│ 매출(net): {net}")
+    # 7일 베이스라인 1회 수집 (이상알림 + 퍼널프록시 공용, 독립 try)
+    baseline: list = []
+    try:
+        baseline = _collect_baseline_full(date, days=7)
+    except Exception:
+        pass   # 빈 리스트 → 비교 불가로 graceful degrade
+
+    # GEO 인용률 줄 (_citation_line 내부에 독립 try 있음)
+    cit_line = _citation_line()
+
+    # GEO recent 1회 수집 (인용 이상알림 + 판단카드 공용, 독립 try)
+    geo_recent: list = []
+    try:
+        geo_recent = geo_citation.recent_unbiased_citations(2)
+    except Exception:
+        pass
+
+    # 매출 이상알림 (독립 try, 공용 baseline 사용 — 추가 API 호출 없음)
+    try:
+        nets = [row["net"] for row in baseline]
+        if len(nets) < 7:
+            sales_anom = "매출 점검: 비교 데이터 부족"
+        else:
+            med  = _median(nets)
+            if med <= 0:
+                sales_anom = "매출 점검: 비교 데이터 부족"
+            else:
+                dev  = (yest_net - med) / med * Decimal(100)
+                sign = "+" if dev >= 0 else "-"
+                body = f"매출 7일중앙값比 {sign}{abs(dev):.0f}%"
+                sales_anom = f"⚠️ {body}" if abs(dev) > Decimal(30) else body
+    except Exception:
+        sales_anom = "매출 점검: 비교 실패"
+
+    # 인용 이상알림 (독립 try, 공용 geo_recent 사용)
+    try:
+        if len(geo_recent) < 2:
+            cite_anom = "인용 점검: 비교 데이터 부족"
+        else:
+            cur, prev = geo_recent[0]["citation_count"], geo_recent[1]["citation_count"]
+            cite_anom = (
+                f"인용 {cur}건 유지" if cur == prev
+                else f"인용 {prev}건→{cur}건 {'▲' if cur > prev else '▼'}"
+            )
+    except Exception:
+        cite_anom = "인용 점검: 비교 실패"
+
+    # 판단 카드 (독립 try — 실패해도 나머지 리포트 정상 발송)
+    try:
+        proxy    = _funnel_proxy(r, baseline)
+        card_txt = _judgment_card(r, geo_recent, proxy, baseline)
+    except Exception:
+        card_txt = "진단: 산출 실패"
+
     if canceled_cnt > 0:
-        lines.append(f"│   └ 취소 {canceled_cnt}건 {canceled_amt} 제외 (gross {gross})")
+        cancel_detail = f"│   └ 취소 {canceled_cnt}건 {canceled_amt} 제외 (gross {gross})"
+        order_line    = f"│ 주문: {r['net_order_count']}건 (취소 {canceled_cnt} 제외)"
     else:
-        lines.append("│   └ 취소 없음")
-    # 핵심 인용률 — GEO 조회 실패가 매출 리포트를 막지 않도록 독립 처리(매출 블록 아래)
-    lines.append(_citation_line())
-    if canceled_cnt > 0:
-        lines.append(f"│ 주문: {r['net_order_count']}건 (취소 {canceled_cnt} 제외)")
-    else:
-        lines.append(f"│ 주문: {r['net_order_count']}건")
-    lines.append(f"│ 구매자: {r['unique_buyers']}명")
-    # 이상알림 (각각 독립 try — 실패해도 매출 리포트는 정상 발송)
-    lines.append(f"│ {_sales_anomaly_text(date, Decimal(r['net_payment_amount']))}")
-    lines.append(f"└ {_citation_anomaly_text()}")
-    return "\n".join(lines)
+        cancel_detail = "│   └ 취소 없음"
+        order_line    = f"│ 주문: {r['net_order_count']}건"
+
+    # 200자 트림 가드
+    parts = [
+        (0, f"┌ BYOCORE 일간 리포트 ({date})"),
+        (0, f"│ 매출(net): {net}"),
+        (5, cancel_detail),
+        (3, cit_line),
+        (4, order_line),
+        (4, f"│ 구매자: {r['unique_buyers']}명"),
+        (2, f"│ {sales_anom}"),
+        (2, f"│ {cite_anom}"),
+        (1, f"└ {card_txt}"),
+    ]
+    return _assemble_with_limit(parts, KAKAO_TEXT_LIMIT)
 
 
 def _median(values: list) -> Decimal:
@@ -94,16 +160,40 @@ def _median(values: list) -> Decimal:
     return (s[mid - 1] + s[mid]) / 2
 
 
-def _baseline_nets(date: str, days: int = 7) -> list:
-    """date 직전 `days`일의 net 매출(활동일=order_count>0)을 collect_sales 일별 호출로 수집. READ-ONLY."""
+def _collect_baseline_full(date: str, days: int = 7) -> list:
+    """
+    date 직전 days일의 일별 집계(활동일=order_count>0 만). READ-ONLY.
+    반환 list[dict]: {date, net, order_count, net_order_count, canceled_count, cancel_rate, aov}
+    anomaly·funnel proxy 공용 — 7일 수집 1회로 공유(신규 API 호출 없음).
+    """
     d0 = datetime.date.fromisoformat(date)
-    nets = []
+    rows = []
     for i in range(1, days + 1):
         dd = (d0 - datetime.timedelta(days=i)).isoformat()
         rr = cafe24_sales.collect_sales(dd, dd)
-        if rr.get("order_count", 0) > 0:          # 활동일만 기준에 포함
-            nets.append(Decimal(rr["net_payment_amount"]))
-    return nets
+        oc = rr.get("order_count", 0)
+        if oc == 0:
+            continue
+        noc = rr.get("net_order_count", 0)
+        cc  = rr.get("canceled_count", 0)
+        net = Decimal(rr["net_payment_amount"])
+        cancel_rate = Decimal(cc) / Decimal(oc)           # oc > 0 보장
+        aov = net / Decimal(noc) if noc > 0 else Decimal("0")
+        rows.append({
+            "date": dd,
+            "net": net,
+            "order_count": oc,
+            "net_order_count": noc,
+            "canceled_count": cc,
+            "cancel_rate": cancel_rate,
+            "aov": aov,
+        })
+    return rows
+
+
+def _baseline_nets(date: str, days: int = 7) -> list:
+    """date 직전 days일의 net 매출(활동일). _collect_baseline_full 래퍼."""
+    return [r["net"] for r in _collect_baseline_full(date, days)]
 
 
 def _sales_anomaly_text(date: str, yest_net: Decimal) -> str:
@@ -143,6 +233,102 @@ def _citation_anomaly_text() -> str:
         return f"인용 {cur}건 유지"
     arrow = "▲" if cur > prev else "▼"
     return f"인용 {prev}건→{cur}건 {arrow}"
+
+
+def _funnel_proxy(today_r: dict, baseline: list) -> dict:
+    """
+    퍼널 프록시 신호 산출. today_r = collect_sales 반환값. 신규 API 호출 없음.
+    반환: {aov, cancel_rate, aov_flag("low"/"normal"/"high"), cancel_flag("high"/"normal"), has_baseline}
+    임계치: AOV ±30%, 취소율 7일중앙값+5%p 이상 AND 오늘 취소율 10%+.
+    """
+    oc  = today_r.get("order_count", 0)
+    noc = today_r.get("net_order_count", 0)
+    cc  = today_r.get("canceled_count", 0)
+    net = Decimal(today_r["net_payment_amount"])
+    cancel_rate = Decimal(cc) / Decimal(oc) if oc > 0 else Decimal("0")
+    aov = net / Decimal(noc) if noc > 0 else Decimal("0")
+
+    result = {
+        "aov": aov, "cancel_rate": cancel_rate,
+        "aov_flag": "normal", "cancel_flag": "normal", "has_baseline": False,
+    }
+    if len(baseline) < 3:   # 최소 3일치 없으면 비교 의미 없음
+        return result
+
+    result["has_baseline"] = True
+    b_aovs    = [r["aov"]         for r in baseline if r["aov"] > 0]
+    b_cancels = [r["cancel_rate"] for r in baseline]
+
+    if b_aovs:
+        med_aov = _median(b_aovs)
+        if med_aov > 0:
+            dev = (aov - med_aov) / med_aov
+            result["aov_flag"] = (
+                "low"  if dev < Decimal("-0.3") else
+                "high" if dev > Decimal("0.3")  else "normal"
+            )
+
+    if b_cancels:
+        med_cancel = _median(b_cancels)
+        result["cancel_flag"] = (
+            "high" if cancel_rate > med_cancel + Decimal("0.05")
+                      and cancel_rate > Decimal("0.1")
+            else "normal"
+        )
+    return result
+
+
+def _judgment_card(today_r: dict, geo_recent: list, proxy: dict, baseline: list) -> str:
+    """
+    GEO×매출×퍼널프록시 신호 교차 → 운영 가설 1줄.
+    포지셔닝: 규칙 기반 신호 패턴 매칭. 어조 = "가능성/점검 권장" (단정 금지).
+    GEO 비-biased 2개 미만 → GEO 레이어 제외(graceful degradation).
+    매칭 우선순위: 취소율↑ → GEO↑매출↓ → GEO↓매출↓ → GEO↑매출↑ → AOV↓매출↓ → 매출↓ → 매출↑ → 정상
+    """
+    net = Decimal(today_r["net_payment_amount"])
+
+    # 매출 추세 (7d median ±30%)
+    sales_trend = "normal"
+    if len(baseline) >= 3:
+        med = _median([r["net"] for r in baseline])
+        if med > 0:
+            dev = (net - med) / med
+            sales_trend = "down" if dev < Decimal("-0.3") else ("up" if dev > Decimal("0.3") else "normal")
+
+    # 주문수 추세 (7d median ±30%)
+    order_trend = "normal"
+    if len(baseline) >= 3:
+        med_o   = _median([Decimal(r["net_order_count"]) for r in baseline])
+        today_o = Decimal(today_r.get("net_order_count", 0))
+        if med_o > 0:
+            dev_o = (today_o - med_o) / med_o
+            order_trend = "low" if dev_o < Decimal("-0.3") else ("high" if dev_o > Decimal("0.3") else "normal")
+
+    # GEO 추세 (비-biased 2개+, graceful degradation)
+    geo_trend = "na"
+    if isinstance(geo_recent, list) and len(geo_recent) >= 2:
+        gc, gp = geo_recent[0]["citation_count"], geo_recent[1]["citation_count"]
+        geo_trend = "up" if gc > gp else ("down" if gc < gp else "neutral")
+
+    cancel_flag = proxy.get("cancel_flag", "normal")
+    aov_flag    = proxy.get("aov_flag",    "normal")
+
+    # 첫 번째 매칭 반환 (가설 어조)
+    if cancel_flag == "high":
+        return "취소율↑ 가능성 · CS/배송/재고 점검 권장"
+    if geo_trend == "up" and sales_trend == "down" and order_trend == "low":
+        return "AI유입 가능성 · 발견→구매 전환 구간 점검 권장"
+    if geo_trend == "down" and sales_trend == "down":
+        return "인지도 하락 가능성 · 콘텐츠 우선 점검 권장"
+    if geo_trend == "up" and sales_trend == "up":
+        return "GEO·매출 시너지 · 현 방향 유지 권장"
+    if aov_flag == "low" and sales_trend == "down":
+        return "객단가↓ 가능성 · 고가상품 노출 순서 확인 권장"
+    if sales_trend == "down":
+        return "매출↓ · 프로모션/광고 현황 확인 권장"
+    if sales_trend == "up":
+        return "매출↑ · 전환 요인 확인 권장"
+    return "정상 범위"
 
 
 def _citation_line() -> str:

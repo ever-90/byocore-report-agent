@@ -65,6 +65,16 @@ python -m src.kakao_auth       # 사용법(docstring) 출력
       - [x] **월간 리포트** (2026-05-30): build_monthly_report()/send_monthly_report() + CLI `monthly`, 직전30일vs전월30일, net합계+전월比 / 일평균+최고·최저일 / KPI달성률(config경유, 미설정→"목표 미설정") / 인용추세(비-biased 당월만) / Top이슈3(median±30%), **200자 우선순위 트림 가드**(일평균5>KPI4>인용3>이슈2, 제목·net·푸터 보호), 독립 try, 실발송 179자
         · KPI 구조: MONTHLY_SALES_TARGET(.env) 설정 시 달성률 자동 계산, 미설정이면 "KPI 목표 미설정"
 - [x] 이상 알림 임계치 정의 및 탐지 — 매출 ±30%(7일 median, 평균 아님) / 인용 건수변화(단일일 %비교 금지·biased 제외·2개미만 skip)
+- [x] **판단 카드 (GEO×매출×퍼널프록시)** (2026-06-01): 일간 리포트 맨 아래 "가설 + 확인 권장 액션" 1줄 자동 생성
+      - _collect_baseline_full(): 7일 베이스라인 1회 수집 → anomaly·funnel proxy 공용(신규 API 호출 0)
+      - _funnel_proxy(): AOV(±30%)/취소율(7d중앙값+5%p이상+오늘10%+) 플래그 산출
+      - _judgment_card(): GEO추세×매출추세×프록시 → 가설 1줄(단정 금지, "가능성/점검 권장" 어조)
+        · 우선순위: 취소율↑ → AI유입가능성 → 인지도하락 → GEO·매출시너지 → 객단가↓ → 매출↓ → 매출↑ → 정상범위
+        · GEO 비-biased <2개: GEO 레이어 제외(graceful degradation)
+        · 베이스라인 비어있음: 모든 플래그 "normal" 폴백
+      - 독립 try: 판단 실패해도 나머지 리포트 정상 발송
+      - build_daily_report → _assemble_with_limit 적용(우선순위: 취소상세5>주문/구매자4>인용률3>이상알림2>판단카드1)
+      - 실발송 181자, result_code=0 ✓. 엣지케이스 5종 검증(cancel_high/geo_na/aov_low/정상/빈baseline) 전부 통과
 - [ ] `schedule` 기반 스케줄러 (일/주/월 트리거)
 - [ ] 토큰 만료시각(timestamp) 추적 및 사전 갱신
 - [x] 카카오 본문 길이 초과 대응 — 일간·주간·월간 모두 **200자 우선순위 트림 가드** 적용 완료
