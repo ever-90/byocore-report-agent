@@ -30,7 +30,7 @@ echo [%date% %time%] run_daily.bat 시작>>"%LOGFILE%"
 echo ------------------------------------------------------------>>"%LOGFILE%"
 
 REM --- 리포터 실행: stdout+stderr 모두 로그에 append ---
-python -m src.reporter >>"%LOGFILE%" 2>&1
+"C:\Users\Administrator\AppData\Local\Programs\Python\Python313\python.exe" -m src.reporter >>"%LOGFILE%" 2>&1
 set "RC=%ERRORLEVEL%"
 
 REM --- 결과 판정/기록 ---
