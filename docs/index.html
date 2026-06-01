@@ -39,10 +39,9 @@
     .chart-label{font-size:.68rem;color:var(--muted);margin-bottom:10px;
       text-transform:uppercase;letter-spacing:.04em}
     .alert-section{margin-bottom:16px}
-    .alert{
-      background:var(--warn-bg);border-left:3px solid var(--warn);
-      border-radius:6px;padding:9px 12px;margin-bottom:7px;font-size:.82rem
-    }
+    .alert{border-radius:6px;padding:9px 12px;margin-bottom:7px;font-size:.82rem}
+    .alert-warn{background:var(--warn-bg);border-left:3px solid var(--warn)}
+    .alert-info{background:#0d1f30;border-left:3px solid var(--accent)}
     footer{
       text-align:center;color:var(--muted);font-size:.7rem;
       border-top:1px solid var(--border);padding-top:12px
@@ -63,7 +62,7 @@
   <div class="card">
     <div class="card-label">핵심 인용률</div>
     <div class="card-value">1.2%</div>
-    <div class="card-sub">2건→15건 ▲</div>
+    <div class="card-sub">건수 2→15건 ▲</div>
   </div>
   <div class="card">
     <div class="card-label">주문 / 구매자</div>
@@ -72,7 +71,7 @@
   </div>
   <div class="card wide">
     <div class="card-label">오늘 진단</div>
-    <div class="card-value">정상 범위</div>
+    <div class="card-value">인용률 하락 추세 · GEO 콘텐츠 점검 권장</div>
   </div>
 </div>
 
@@ -82,10 +81,11 @@
 </div>
 
 <div class="alert-section">
-<div class="alert">⚠️ 인용 건수 2건→15건 ▲</div>
+<div class="alert alert-warn">⚠️ 인용률: 2.0→1.2% ▼ (연속 하락)</div>
+<div class="alert alert-info">인용 건수: 2→15건 ▲</div>
 </div>
 
-<footer>마지막 갱신: 2026-06-01 12:11 KST</footer>
+<footer>마지막 갱신: 2026-06-01 13:34 KST</footer>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 <script>

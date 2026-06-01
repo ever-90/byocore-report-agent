@@ -190,8 +190,9 @@ def collect_citation_rate(target_date: str | None = None) -> dict | None:
 def recent_unbiased_citations(n: int = 2) -> list[dict]:
     """
     최근 n개 '비-biased'(date > 2026-05-29) 측정값을 date 내림차순으로 반환. READ-ONLY.
-    인용 '건수' 변화 비교용(단일일 % 비교 금지 원칙). 동일 날짜 중복은 1개로 정리.
-    각 dict: {date, direct_count, indirect_count, citation_count}
+    인용 '건수' 변화 비교 + 인용률 추세 판정용. 동일 날짜 중복은 1개로 정리.
+    각 dict: {date, direct_count, indirect_count, citation_count, citation_rate}
+      citation_rate: byocore_citation_rate (float, 없으면 None) — 추세 판정용
     """
     records = _fetch_records()
     rows: list[tuple[datetime.date, dict]] = []
@@ -199,13 +200,15 @@ def recent_unbiased_citations(n: int = 2) -> list[dict]:
         d = _parse_date(_get_field(r, FIELD_DATE))
         if d is None or d <= BIAS_CUTOFF:   # biased 데이터는 비교에서 제외
             continue
-        direct_cnt = int(_to_float(_get_field(r, FIELD_DIRECT)) or 0)
+        direct_cnt   = int(_to_float(_get_field(r, FIELD_DIRECT)) or 0)
         indirect_cnt = int(_to_float(_get_field(r, FIELD_INDIRECT)) or 0)
+        rate         = _to_float(_get_field(r, FIELD_RATE))   # float or None
         rows.append((d, {
             "date": d.isoformat(),
-            "direct_count": direct_cnt,
+            "direct_count":   direct_cnt,
             "indirect_count": indirect_cnt,
             "citation_count": direct_cnt + indirect_cnt,
+            "citation_rate":  rate,          # 추세 판정용 — 없으면 None
         }))
     rows.sort(key=lambda t: t[0], reverse=True)
 

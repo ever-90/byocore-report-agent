@@ -84,10 +84,11 @@ def build_daily_report(date: str) -> str:
     # GEO 인용률 줄 (_citation_line 내부에 독립 try 있음)
     cit_line = _citation_line()
 
-    # GEO recent 1회 수집 (인용 이상알림 + 판단카드 공용, 독립 try)
+    # GEO recent 1회 수집 (인용 이상알림 + 판단카드 + 인용률추세 공용, 독립 try)
+    # n=3: 인용률 추세 판정에 3개 필요 (부족 시 _cite_rate_trend → "na" graceful degrade)
     geo_recent: list = []
     try:
-        geo_recent = geo_citation.recent_unbiased_citations(2)
+        geo_recent = geo_citation.recent_unbiased_citations(3)
     except Exception:
         pass
 
@@ -104,22 +105,36 @@ def build_daily_report(date: str) -> str:
                 dev  = (yest_net - med) / med * Decimal(100)
                 sign = "+" if dev >= 0 else "-"
                 body = f"매출 7일중앙값比 {sign}{abs(dev):.0f}%"
-                sales_anom = f"⚠️ {body}" if abs(dev) > Decimal(30) else body
+                # ⚠️ = 나쁜 신호(급락)만. 급등은 경고 아님 — 아이콘 없이 표시.
+                sales_anom = f"⚠️ {body}" if dev < Decimal(-30) else body
     except Exception:
         sales_anom = "매출 점검: 비교 실패"
 
-    # 인용 이상알림 (독립 try, 공용 geo_recent 사용)
+    # 인용 건수 이상알림 (독립 try, 공용 geo_recent)
     try:
         if len(geo_recent) < 2:
-            cite_anom = "인용 점검: 비교 데이터 부족"
+            cite_cnt_anom = "인용 건수: 비교 데이터 부족"
         else:
             cur, prev = geo_recent[0]["citation_count"], geo_recent[1]["citation_count"]
-            cite_anom = (
-                f"인용 {cur}건 유지" if cur == prev
-                else f"인용 {prev}건→{cur}건 {'▲' if cur > prev else '▼'}"
+            cite_cnt_anom = (
+                f"인용 건수: {cur}건 유지" if cur == prev
+                else f"인용 건수: {prev}→{cur}건 {'▲' if cur > prev else '▼'}"
             )
     except Exception:
-        cite_anom = "인용 점검: 비교 실패"
+        cite_cnt_anom = "인용 건수: 비교 실패"
+
+    # 인용률 변화 (독립 try — rate 값 있을 때만 표시, 없으면 빈 문자열로 생략)
+    # 건수(cite_cnt_anom)와 구분: "율"이라는 단어로 지표 명확화
+    cite_rate_anom = ""
+    try:
+        if len(geo_recent) >= 2:
+            cur_rate  = geo_recent[0].get("citation_rate")
+            prev_rate = geo_recent[1].get("citation_rate")
+            if cur_rate is not None and prev_rate is not None and cur_rate != prev_rate:
+                arrow = "▼" if cur_rate < prev_rate else "▲"
+                cite_rate_anom = f"인용률: {prev_rate:.1f}→{cur_rate:.1f}% {arrow}"
+    except Exception:
+        pass   # 율 표시 실패 시 생략 — 건수 줄은 정상 유지
 
     # 판단 카드 (독립 try — 실패해도 나머지 리포트 정상 발송)
     try:
@@ -136,6 +151,8 @@ def build_daily_report(date: str) -> str:
         order_line    = f"│ 주문: {r['net_order_count']}건"
 
     # 200자 트림 가드
+    # 우선순위: 취소상세(5) > 주문/구매자(4) > 인용률현재값/건수(3) > 매출이상/율변화(2) > 판단(1)
+    # 율(2) vs 건수(3): 율이 더 보호됨 (건수는 트림 가능)
     parts = [
         (0, f"┌ BYOCORE 일간 리포트 ({date})"),
         (0, f"│ 매출(net): {net}"),
@@ -144,9 +161,13 @@ def build_daily_report(date: str) -> str:
         (4, order_line),
         (4, f"│ 구매자: {r['unique_buyers']}명"),
         (2, f"│ {sales_anom}"),
-        (2, f"│ {cite_anom}"),
-        (1, f"└ {card_txt}"),
     ]
+    if cite_rate_anom:
+        parts.append((2, f"│ {cite_rate_anom}"))   # 율 변화 — 건수보다 우선 보호
+    parts.extend([
+        (3, f"│ {cite_cnt_anom}"),                  # 건수 변화 — 트림 가능
+        (1, f"└ {card_txt}"),
+    ])
     return _assemble_with_limit(parts, KAKAO_TEXT_LIMIT)
 
 
@@ -278,12 +299,42 @@ def _funnel_proxy(today_r: dict, baseline: list) -> dict:
     return result
 
 
+def _cite_rate_trend(geo_recent: list) -> str:
+    """
+    citation_rate 연속 추세 판정 (보수적). READ-ONLY.
+    geo_recent: recent_unbiased_citations 결과(date 내림차순, citation_rate 포함).
+    조건: 비-biased 3개 이상 + 전부 rate 값 있음 + 방향 일관 시만 판정.
+    3개 미만이거나 rate None 포함 → "na" (데이터 축적 중, 단정 금지).
+    반환: "down" | "up" | "stable" | "na"
+    """
+    if len(geo_recent) < 3:
+        return "na"
+    rates: list[float] = []
+    for entry in geo_recent[:3]:       # 최신 3개만 사용
+        rate = entry.get("citation_rate")
+        if rate is None:
+            return "na"                # 값 없으면 판정 불가 → 축적 중
+        rates.append(float(rate))
+    # rates[0]=최신, rates[1]=두번째, rates[2]=가장 오래된
+    # 연속 하락: 최신 < 두번째 < 세번째 (오래된 쪽이 더 높음)
+    if rates[0] < rates[1] < rates[2]:
+        return "down"
+    # 연속 상승: 최신 > 두번째 > 세번째
+    if rates[0] > rates[1] > rates[2]:
+        return "up"
+    return "stable"
+
+
 def _judgment_card(today_r: dict, geo_recent: list, proxy: dict, baseline: list) -> str:
     """
-    GEO×매출×퍼널프록시 신호 교차 → 운영 가설 1줄.
+    GEO×매출×퍼널프록시×인용률추세 신호 교차 → 운영 가설 1줄.
     포지셔닝: 규칙 기반 신호 패턴 매칭. 어조 = "가능성/점검 권장" (단정 금지).
-    GEO 비-biased 2개 미만 → GEO 레이어 제외(graceful degradation).
-    매칭 우선순위: 취소율↑ → GEO↑매출↓ → GEO↓매출↓ → GEO↑매출↑ → AOV↓매출↓ → 매출↓ → 매출↑ → 정상
+    graceful degradation:
+      - GEO 비-biased 2개 미만 → GEO 건수 레이어 제외 (geo_trend="na")
+      - 비-biased 3개 미만 or rate None → 인용률 추세 제외 (cite_trend="na")
+    매칭 우선순위:
+      취소율↑ → 인용률↓+매출↓ → GEO↑매출↓ → 인용률↓ → GEO↓매출↓ → GEO↑매출↑
+      → AOV↓매출↓ → 매출↓ → 매출↑ → 정상
     """
     net = Decimal(today_r["net_payment_amount"])
 
@@ -304,20 +355,27 @@ def _judgment_card(today_r: dict, geo_recent: list, proxy: dict, baseline: list)
             dev_o = (today_o - med_o) / med_o
             order_trend = "low" if dev_o < Decimal("-0.3") else ("high" if dev_o > Decimal("0.3") else "normal")
 
-    # GEO 추세 (비-biased 2개+, graceful degradation)
+    # GEO 건수 추세 (비-biased 2개+, graceful degradation)
     geo_trend = "na"
     if isinstance(geo_recent, list) and len(geo_recent) >= 2:
         gc, gp = geo_recent[0]["citation_count"], geo_recent[1]["citation_count"]
         geo_trend = "up" if gc > gp else ("down" if gc < gp else "neutral")
 
+    # 인용률 추세 (비-biased 3개+, rate 값 있을 때만 — 보수적)
+    cite_trend = _cite_rate_trend(geo_recent)
+
     cancel_flag = proxy.get("cancel_flag", "normal")
     aov_flag    = proxy.get("aov_flag",    "normal")
 
-    # 첫 번째 매칭 반환 (가설 어조)
+    # 첫 번째 매칭 반환 (가설 어조, 단정 금지)
     if cancel_flag == "high":
         return "취소율↑ 가능성 · CS/배송/재고 점검 권장"
+    if cite_trend == "down" and sales_trend == "down":
+        return "인용률↓+매출↓ · 콘텐츠·전환 동시 점검 권장"
     if geo_trend == "up" and sales_trend == "down" and order_trend == "low":
         return "AI유입 가능성 · 발견→구매 전환 구간 점검 권장"
+    if cite_trend == "down":
+        return "인용률 하락 추세 · GEO 콘텐츠 점검 권장"
     if geo_trend == "down" and sales_trend == "down":
         return "인지도 하락 가능성 · 콘텐츠 우선 점검 권장"
     if geo_trend == "up" and sales_trend == "up":

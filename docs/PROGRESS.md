@@ -65,16 +65,30 @@ python -m src.kakao_auth       # 사용법(docstring) 출력
       - [x] **월간 리포트** (2026-05-30): build_monthly_report()/send_monthly_report() + CLI `monthly`, 직전30일vs전월30일, net합계+전월比 / 일평균+최고·최저일 / KPI달성률(config경유, 미설정→"목표 미설정") / 인용추세(비-biased 당월만) / Top이슈3(median±30%), **200자 우선순위 트림 가드**(일평균5>KPI4>인용3>이슈2, 제목·net·푸터 보호), 독립 try, 실발송 179자
         · KPI 구조: MONTHLY_SALES_TARGET(.env) 설정 시 달성률 자동 계산, 미설정이면 "KPI 목표 미설정"
 - [x] 이상 알림 임계치 정의 및 탐지 — 매출 ±30%(7일 median, 평균 아님) / 인용 건수변화(단일일 %비교 금지·biased 제외·2개미만 skip)
-- [x] **판단 카드 (GEO×매출×퍼널프록시)** (2026-06-01): 일간 리포트 맨 아래 "가설 + 확인 권장 액션" 1줄 자동 생성
-      - _collect_baseline_full(): 7일 베이스라인 1회 수집 → anomaly·funnel proxy 공용(신규 API 호출 0)
-      - _funnel_proxy(): AOV(±30%)/취소율(7d중앙값+5%p이상+오늘10%+) 플래그 산출
-      - _judgment_card(): GEO추세×매출추세×프록시 → 가설 1줄(단정 금지, "가능성/점검 권장" 어조)
-        · 우선순위: 취소율↑ → AI유입가능성 → 인지도하락 → GEO·매출시너지 → 객단가↓ → 매출↓ → 매출↑ → 정상범위
-        · GEO 비-biased <2개: GEO 레이어 제외(graceful degradation)
-        · 베이스라인 비어있음: 모든 플래그 "normal" 폴백
-      - 독립 try: 판단 실패해도 나머지 리포트 정상 발송
-      - build_daily_report → _assemble_with_limit 적용(우선순위: 취소상세5>주문/구매자4>인용률3>이상알림2>판단카드1)
-      - 실발송 181자, result_code=0 ✓. 엣지케이스 5종 검증(cancel_high/geo_na/aov_low/정상/빈baseline) 전부 통과
+- [x] **판단 카드 v1 (GEO×매출×퍼널프록시)** (2026-06-01)
+      - _collect_baseline_full(): 7일 베이스라인 1회 수집 → anomaly·funnel proxy 공용
+      - _funnel_proxy(): AOV(±30%)/취소율 플래그 / _judgment_card(): 8-case 매칭 가설 1줄
+      - 실발송 181자, result_code=0 ✓
+- [x] **판단 카드 v2 — 인용률 추세 + 알림 아이콘 정리** (2026-06-01)
+      - geo_citation.recent_unbiased_citations(): citation_rate 필드 추가(추세 판정용)
+      - _cite_rate_trend(geo_recent): 비-biased 3개 이상 + 전부 rate 존재 + 연속 단조 변화 시만 판정
+        · 3개 미만/rate None 포함 → "na"(데이터 축적 중, 단정 금지) — 보수적 설계
+        · recent_unbiased_citations(2→3): 일간 리포트·대시보드 모두 n=3으로 변경
+      - _judgment_card() 확장: cite_trend 신규 우선순위 추가
+        · 취소율↑ → 인용률↓+매출↓ → AI유입가능성 → 인용률↓(단독) → 인지도하락 → GEO·매출시너지 → 객단가↓ → 매출↓ → 매출↑ → 정상
+      - 알림 아이콘 의미 분리: ⚠️=나쁜신호만(매출급락·인용↓), 아이콘없음=중립/긍정(매출급등·인용건수▲)
+        · build_daily_report: sales_anom ⚠️ → 하락(dev<-30%)만 적용
+        · dashboard: warn_alerts(⚠️빨강) / info_alerts(파란테두리) 분리 표시
+      - 실발송: "인용률 하락 추세 · GEO 콘텐츠 점검 권장" 164자, result_code=0 ✓
+      - 대시보드: ⚠️ warn 1건(인용률 하락) + info 1건(인용 건수▲) 정상 분류 확인
+- [x] **판단 v2 버그확인 + 라벨 개선** (2026-06-01)
+      - 버그확인: 비-biased 3개 실존 확인(06-01/05-31/05-30, rates=1.2/2.0/3.0%), 단조 하락 → "down" 정상
+      - 건수 vs 율 라벨 분리:
+        · reporter: cite_cnt_anom "인용 건수: N→M건 ▲/▼" (priority 3, 트림 가능)
+        · reporter: cite_rate_anom "인용률: X.X→Y.Y% ▲/▼" (priority 2, 율 우선 보호, rate 없으면 생략)
+        · dashboard 카드 sub: "건수 N→M건 ▲/▼"
+        · dashboard 알림: ⚠️ "인용률: 2.0→1.2% ▼ (연속 하락)" / info "인용 건수: 2→15건 ▲"
+      - 실발송 185자, result_code=0 ✓
 - [x] **콘솔 대시보드 HTML** (2026-06-01): `src/dashboard.py` → `docs/index.html` (GitHub Pages)
       - `build_dashboard_html(date)` / `save_dashboard(date)`, CLI `python -m src.dashboard [date]`
       - 카드 4종: net매출·핵심인용률·주문/구매자·판단카드(1줄), 최근 7일 net 막대차트(Chart.js CDN)

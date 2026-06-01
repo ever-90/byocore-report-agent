@@ -25,6 +25,7 @@ from . import config  # noqa: F401 (하드코딩 방지 — 추후 config 경유
 from .collectors import cafe24_sales, geo_citation
 from .reporter import (
     KST,
+    _cite_rate_trend,
     _collect_baseline_full,
     _funnel_proxy,
     _judgment_card,
@@ -89,19 +90,20 @@ def build_dashboard_html(date: str) -> str:
     except Exception:
         geo_rate_html = "조회 실패"
 
-    # ── GEO recent (인용 이상알림·판단카드 공용) ──────────────────────────
+    # ── GEO recent (인용 이상알림·판단카드·인용률추세 공용) ───────────────
+    # n=3: _cite_rate_trend 가 3개 필요 (부족 시 "na" graceful degrade)
     geo_recent: list = []
     try:
-        geo_recent = geo_citation.recent_unbiased_citations(2)
+        geo_recent = geo_citation.recent_unbiased_citations(3)
     except Exception:
         pass
 
-    # 인용 변화 sub 텍스트
+    # 인용 건수 변화 sub 텍스트 ("건수:" 라벨로 율과 구분)
     cite_sub = ""
     if len(geo_recent) >= 2:
         cur, prev = geo_recent[0]["citation_count"], geo_recent[1]["citation_count"]
         if cur != prev:
-            cite_sub = f"{prev}건→{cur}건 {'▲' if cur > prev else '▼'}"
+            cite_sub = f"건수 {prev}→{cur}건 {'▲' if cur > prev else '▼'}"
     if cite_sub:
         geo_sub_html = _esc(cite_sub)
 
@@ -113,34 +115,59 @@ def build_dashboard_html(date: str) -> str:
     except Exception:
         pass
 
-    # ── 이상알림 배너 ────────────────────────────────────────────────────
-    alerts: list[str] = []
+    # ── 이상알림 배너 (warn=⚠️ 빨강, info=▲ 파랑) ──────────────────────
+    # ⚠️ warn: 나쁜 신호만 (매출 급락, 인용률↓ 추세, 인용 건수↓)
+    # ▲ info: 좋거나 중립 신호 (매출 급등, 인용 건수↑)
+    warn_alerts: list[str] = []
+    info_alerts: list[str] = []
+
     try:
         nets = [r["net"] for r in baseline]
         if len(nets) >= 7:
             med = _median(nets)
             if med > 0:
                 dev = (yest_net - med) / med * Decimal(100)
-                if abs(dev) > Decimal(30):
-                    sign = "+" if dev >= 0 else ""
-                    alerts.append(f"매출 7일중앙값比 {sign}{int(dev)}% 이탈 감지")
-    except Exception:
-        pass
-    try:
-        if len(geo_recent) >= 2:
-            cur, prev = geo_recent[0]["citation_count"], geo_recent[1]["citation_count"]
-            if cur != prev:
-                arrow = "▲" if cur > prev else "▼"
-                alerts.append(f"인용 건수 {prev}건→{cur}건 {arrow}")
+                if dev < Decimal(-30):
+                    warn_alerts.append(f"매출 7일중앙값比 {int(dev)}% 이탈 감지")
+                elif dev > Decimal(30):
+                    info_alerts.append(f"매출 7일중앙값比 +{int(dev)}% 상승")
     except Exception:
         pass
 
+    # 인용 건수 변화 ("건수:" 라벨로 율과 명확히 구분)
+    try:
+        if len(geo_recent) >= 2:
+            cur, prev = geo_recent[0]["citation_count"], geo_recent[1]["citation_count"]
+            if cur > prev:
+                info_alerts.append(f"인용 건수: {prev}→{cur}건 ▲")
+            elif cur < prev:
+                warn_alerts.append(f"인용 건수: {prev}→{cur}건 ▼")
+    except Exception:
+        pass
+
+    # 인용률 변화 — 실제 값 표시 ("율:" 라벨). 연속 하락 확인 시 맥락 추가.
+    try:
+        if len(geo_recent) >= 2:
+            cur_rate  = geo_recent[0].get("citation_rate")
+            prev_rate = geo_recent[1].get("citation_rate")
+            if cur_rate is not None and prev_rate is not None and cur_rate != prev_rate:
+                if cur_rate < prev_rate:
+                    suffix = " (연속 하락)" if _cite_rate_trend(geo_recent) == "down" else ""
+                    warn_alerts.append(f"인용률: {prev_rate:.1f}→{cur_rate:.1f}% ▼{suffix}")
+                else:
+                    info_alerts.append(f"인용률: {prev_rate:.1f}→{cur_rate:.1f}% ▲")
+    except Exception:
+        pass
+
+    all_items: list[str] = []
+    for a in warn_alerts:
+        all_items.append(f'<div class="alert alert-warn">⚠️ {_esc(a)}</div>')
+    for a in info_alerts:
+        # info는 텍스트 안에 이미 방향 표시(▲) 포함 — 별도 prefix 없음. 파란 테두리로 구분.
+        all_items.append(f'<div class="alert alert-info">{_esc(a)}</div>')
     alerts_html = ""
-    if alerts:
-        items = "\n".join(
-            f'<div class="alert">⚠️ {_esc(a)}</div>' for a in alerts
-        )
-        alerts_html = f'<div class="alert-section">\n{items}\n</div>'
+    if all_items:
+        alerts_html = '<div class="alert-section">\n' + "\n".join(all_items) + '\n</div>'
 
     # ── 7일 차트 데이터 (date-6 ~ date, 빈 날짜는 0) ─────────────────────
     d0           = datetime.date.fromisoformat(date)
@@ -202,10 +229,9 @@ def build_dashboard_html(date: str) -> str:
     .chart-label{{font-size:.68rem;color:var(--muted);margin-bottom:10px;
       text-transform:uppercase;letter-spacing:.04em}}
     .alert-section{{margin-bottom:16px}}
-    .alert{{
-      background:var(--warn-bg);border-left:3px solid var(--warn);
-      border-radius:6px;padding:9px 12px;margin-bottom:7px;font-size:.82rem
-    }}
+    .alert{{border-radius:6px;padding:9px 12px;margin-bottom:7px;font-size:.82rem}}
+    .alert-warn{{background:var(--warn-bg);border-left:3px solid var(--warn)}}
+    .alert-info{{background:#0d1f30;border-left:3px solid var(--accent)}}
     footer{{
       text-align:center;color:var(--muted);font-size:.7rem;
       border-top:1px solid var(--border);padding-top:12px
