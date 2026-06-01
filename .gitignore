@@ -25,6 +25,9 @@ venv/
 env/
 ENV/
 
+# ===== 로컬 전용 데이터 (Public repo 노출 불필요) =====
+data/own_products.json
+
 # ===== 리포트 / 로그 산출물(로컬) =====
 logs/
 *.log
