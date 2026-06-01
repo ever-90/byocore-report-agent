@@ -28,7 +28,8 @@ import requests
 
 from . import config
 
-OAUTH_SCOPE = "mall.read_order"   # 1단계: 주문 읽기 전용
+# 필요 scope 추가 시 여기만 수정 후 authorize → issue 1회 재인가
+OAUTH_SCOPE = "mall.read_order,mall.read_product"
 TOKEN_TIMEOUT = 15                # seconds
 
 

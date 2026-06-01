@@ -98,6 +98,15 @@ python -m src.kakao_auth       # 사용법(docstring) 출력
       - 보안: API키·토큰·서비스계정 HTML 미포함 자동 검증 통과 ✅
       - 신규 API 호출 0 — `_collect_baseline_full` 1회로 anomaly·funnel·차트 공용
       - 생성 결과: `docs/index.html` 4,451 bytes
+- [x] **자사 상품가 수집 + 공유 파일 출력** (2026-06-01): `src/collectors/cafe24_products.py` + `data/own_products.json`
+      - 배경: 세일즈 에이전트가 Cafe24 직접 연동 시 토큰 충돌 → 보고 에이전트 경유 설계
+      - scope 추가: `OAUTH_SCOPE = "mall.read_order,mall.read_product"` (기존 read_order 유지 + read_product 추가, 1회 재인가)
+      - 실측: GET /api/v2/admin/products + /count 응답 구조 확인 — `price`(판매가, 세금포함 문자열), `selling`("T"/"F"), `product_code`, `product_no`
+      - collect_products() → build_own_products(selling=T, price>0 필터) → save_own_products(원자적 쓰기)
+      - 검증: count_API=54, 수집=54, 저장=54 일치, 경고 0건. 가격 100원(샘플)~4,000,000원(법인세트)
+      - read_order 회귀검증: 어제(2026-05-31) 주문 73건 정상 조회 → 기존 기능 영향 없음 ✅
+      - 공유 파일: `data/own_products.json` ([{product_name, price, product_code, product_no, display, sold_out}])
+      - 세일즈 에이전트 연동: `OWN_PRODUCTS_PATH` 환경변수로 경로 override 가능
 - [ ] `schedule` 기반 스케줄러 (일/주/월 트리거)
 - [ ] 토큰 만료시각(timestamp) 추적 및 사전 갱신
 - [x] 카카오 본문 길이 초과 대응 — 일간·주간·월간 모두 **200자 우선순위 트림 가드** 적용 완료
