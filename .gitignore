@@ -40,3 +40,6 @@ desktop.ini
 .DS_Store
 .vscode/
 .idea/
+
+# Cafe24 description 백업 (롤백용, 로컬)
+data/desc_backups/
