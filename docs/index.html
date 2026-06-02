@@ -87,18 +87,42 @@
     .stier-orange{background:rgba(240,165,0,.2);color:#f0a500}
     .stier-gray{background:rgba(139,148,158,.2);color:#8b949e}
     .stier-blue{background:rgba(88,166,255,.2);color:#58a6ff}
+    /* ── 이번 주 처방 섹션 ── */
+    .rx-row{
+      display:flex;align-items:flex-start;gap:8px;
+      padding:9px 0;border-bottom:1px solid var(--border)
+    }
+    .rx-row:last-child{border-bottom:none}
+    .rx-rank{font-size:.72rem;color:var(--muted);min-width:24px;padding-top:2px}
+    .rx-info{flex:1;min-width:0}
+    .rx-name{
+      font-size:.84rem;font-weight:500;
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:3px
+    }
+    .rx-meta{font-size:.7rem;color:var(--muted);margin-bottom:2px}
+    .rx-detail{
+      font-size:.72rem;color:var(--text);
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis
+    }
+    .rx-stat{
+      font-size:.65rem;font-weight:700;padding:2px 7px;
+      border-radius:5px;white-space:nowrap;align-self:center
+    }
+    .pstat-ok{background:rgba(63,185,80,.2);color:#3fb950}
+    .pstat-hold{background:rgba(139,148,158,.2);color:#8b949e}
+    .pstat-fail{background:rgba(248,81,73,.2);color:#f85149}
   </style>
 </head>
 <body>
 
 <h1>BYOCORE 운영 대시보드</h1>
-<p class="subtitle">2026-06-01 기준</p>
+<p class="subtitle">2026-05-31 기준</p>
 
 <div class="cards">
   <div class="card">
     <div class="card-label">매출 (net)</div>
-    <div class="card-value">₩2,907,050</div>
-    <div class="card-sub">취소 7건 제외</div>
+    <div class="card-value">₩2,929,840</div>
+    <div class="card-sub">취소 5건 제외</div>
   </div>
   <div class="card">
     <div class="card-label">핵심 인용률</div>
@@ -107,8 +131,8 @@
   </div>
   <div class="card">
     <div class="card-label">주문 / 구매자</div>
-    <div class="card-value">66건</div>
-    <div class="card-sub">67명 구매</div>
+    <div class="card-value">68건</div>
+    <div class="card-sub">71명 구매</div>
   </div>
   <div class="card wide">
     <div class="card-label">오늘 진단</div>
@@ -136,7 +160,13 @@
 <div class="sales-row"><div class="sales-rank">#4</div><div class="sales-info"><div class="sales-name">CJ 바이오코어 혈당케어 유산균 90캡슐…</div><div class="sales-detail">위험도 99 · GEO 1.3% · [희] 질의미등록</div></div><div class="sales-tier stier-red">위험</div></div>
 <div class="sales-row"><div class="sales-rank">#5</div><div class="sales-info"><div class="sales-name">CJ 바이오코어 이너케어 유산균 캡슐형 …</div><div class="sales-detail">위험도 99 · GEO 1.3% · [희] 질의미등록</div></div><div class="sales-tier stier-red">위험</div></div></div></div>
 
-<footer>마지막 갱신: 2026-06-02 09:35 KST</footer>
+<div class="section-wrap"><div class="section-title">이번 주 처방</div><div class="sales-meta">위험 5건 · 처방 2 / 보류 3 / 실패 0</div><div class="rx-list"><div class="rx-row"><div class="rx-rank">#1</div><div class="rx-info"><div class="rx-name">CJ 바이오코어 구강유산균 캡슐형 90캡슐 …</div><div class="rx-meta">위험 보통 · GEO 8.7%</div><div class="rx-detail">own_facts 사실 데이터 필요</div></div><div class="rx-stat pstat-hold">보류</div></div>
+<div class="rx-row"><div class="rx-rank">#2</div><div class="rx-info"><div class="rx-name">CJ 바이오코어 건강한 유산균 500억 플러…</div><div class="rx-meta">위험 보통 · GEO 1.3%</div><div class="rx-detail">own_facts 사실 데이터 필요</div></div><div class="rx-stat pstat-hold">보류</div></div>
+<div class="rx-row"><div class="rx-rank">#3</div><div class="rx-info"><div class="rx-name">CJ 바이오코어 이너케어 유산균 캡슐형 90…</div><div class="rx-meta">위험 보통 · GEO 1.3%</div><div class="rx-detail">[초안] BYOCORE 이너케어 — 피부 면역을 위한 유산균</div></div><div class="rx-stat pstat-ok">처방✓</div></div>
+<div class="rx-row"><div class="rx-rank">#4</div><div class="rx-info"><div class="rx-name">CJ 바이오코어 혈당케어 유산균 90캡슐 /…</div><div class="rx-meta">위험 보통 · GEO 1.3%</div><div class="rx-detail">own_facts 사실 데이터 필요</div></div><div class="rx-stat pstat-hold">보류</div></div>
+<div class="rx-row"><div class="rx-rank">#5</div><div class="rx-info"><div class="rx-name">CJ 바이오코어 이너케어 유산균 캡슐형 60…</div><div class="rx-meta">위험 보통 · GEO 1.3%</div><div class="rx-detail">[초안] BYOCORE 이너케어 유산균 — 피부 면역을 안에서 가꾸다</div></div><div class="rx-stat pstat-ok">처방✓</div></div></div></div>
+
+<footer>마지막 갱신: 2026-06-02 16:15 KST</footer>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 <script>
@@ -145,9 +175,9 @@
   new Chart(ctx, {
     type: 'bar',
     data: {
-      labels: ["05/26", "05/27", "05/28", "05/29", "05/30", "05/31", "06/01"],
+      labels: ["05/25", "05/26", "05/27", "05/28", "05/29", "05/30", "05/31"],
       datasets: [{
-        data: [3517792, 3032680, 4515360, 3375240, 2079523, 2929840, 2907050],
+        data: [3078450, 3517792, 3032680, 4515360, 3375240, 2079523, 2929840],
         backgroundColor: 'rgba(88,166,255,0.45)',
         borderColor:     'rgba(88,166,255,0.9)',
         borderRadius: 5,

@@ -45,6 +45,13 @@ _DEFAULT_SCAN_SUMMARY = os.path.join(
     "byocore-sales-agent", "data", "scan_summary.json",
 )
 
+# 수퍼바이저 배치가 생성한 batch_result.json 기본 경로
+# (환경변수 BATCH_RESULT_PATH 로 override 가능)
+_DEFAULT_BATCH_RESULT = os.path.join(
+    os.path.dirname(_REPO_ROOT),           # C:\Users\Administrator
+    "byocore-supervisor-agent", "data", "batch_result.json",
+)
+
 
 # ---------------------------------------------------------------------------
 # 유틸
@@ -158,6 +165,105 @@ def _build_sales_html(summary: dict | None) -> str:
         f'<div class="sales-meta">스캔 {total}개 · 기준 {updated}</div>'
         f'<div class="risk-badges">{badges_html}</div>'
         f'<div class="sales-list">{rows_html}</div>'
+        f'</div>'
+    )
+
+
+# ---------------------------------------------------------------------------
+# 이번 주 처방 섹션 (수퍼바이저 batch_result.json · READ-ONLY · 독립 try)
+# ---------------------------------------------------------------------------
+def _load_batch_result() -> dict | None:
+    """
+    batch_result.json 읽기. 없거나 파싱 실패 시 None (graceful degradation).
+    ★ 진단.가격위치 등 가격 필드는 이 함수에서도 렌더링에서도 절대 참조하지 않는다.
+    """
+    path = (os.getenv("BATCH_RESULT_PATH") or "").strip() or _DEFAULT_BATCH_RESULT
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+# 처리 상태 → (배지 CSS 클래스, 표시 라벨)
+_PSTAT_CFG = {
+    "처방": ("pstat-ok", "처방✓"),
+    "보류": ("pstat-hold", "보류"),
+    "실패": ("pstat-fail", "실패"),
+}
+
+
+def _build_prescription_html(batch: dict | None) -> str:
+    """
+    이번 주 처방 섹션 HTML. batch=None 이면 빈 문자열(섹션 숨김 — graceful).
+    ★ 가격 미렌더링: 진단.가격위치 를 읽지 않는다. 위험도·GEO인용률·처방상태만.
+    제품별: 위험도 + GEO인용률 + 처방상태 배지(처방✓/보류/실패).
+      · 처방 → 콘텐츠안 제목(요약, 전문 X)
+      · 보류 → own_facts 사실 필요
+      · 실패 → 디자이너 호출 실패
+    """
+    if batch is None:
+        return ""   # 섹션 숨김 (배치 미실행/파일 없음)
+
+    summary = batch.get("_배치요약", {}) if isinstance(batch.get("_배치요약"), dict) else {}
+    results = batch.get("결과", [])
+    if not isinstance(results, list):
+        results = []
+
+    n_total = summary.get("위험제품_수", len(results))
+    n_presc = summary.get("처방생성_수", 0)
+    n_hold  = summary.get("처방보류_수", 0)
+    n_fail  = summary.get("처방실패_수", 0)
+    meta = f"위험 {n_total}건 · 처방 {n_presc} / 보류 {n_hold} / 실패 {n_fail}"
+
+    rows = []
+    for r in results:
+        if not isinstance(r, dict):
+            continue
+        rank = r.get("rank")
+        name_full = str(r.get("제품명", ""))
+        name_short = (name_full[:24] + "…") if len(name_full) > 24 else name_full
+
+        diag = r.get("진단", {}) if isinstance(r.get("진단"), dict) else {}
+        risk = str(diag.get("위험도", ""))          # ★ 가격위치는 읽지 않음
+        geo  = str(diag.get("GEO인용률", ""))
+
+        status = str(r.get("처리", "")).strip()
+        cls, label = _PSTAT_CFG.get(status, ("pstat-hold", status or "?"))
+
+        # 상태별 상세 한 줄
+        presc = r.get("처방", {}) if isinstance(r.get("처방"), dict) else {}
+        if status == "처방":
+            detail = str(presc.get("콘텐츠안_요약", ""))   # [초안] 제목만
+        elif status == "실패":
+            detail = "디자이너 호출 실패"
+        else:  # 보류 등
+            detail = "own_facts 사실 데이터 필요"
+
+        rank_disp = f"#{rank}" if rank is not None else "·"
+        meta_line = " · ".join(p for p in (f"위험 {risk}" if risk else "",
+                                           f"GEO {geo}" if geo else "") if p)
+        rows.append(
+            f'<div class="rx-row">'
+            f'<div class="rx-rank">{_esc(rank_disp)}</div>'
+            f'<div class="rx-info">'
+            f'<div class="rx-name">{_esc(name_short)}</div>'
+            f'<div class="rx-meta">{_esc(meta_line)}</div>'
+            f'<div class="rx-detail">{_esc(detail)}</div>'
+            f'</div>'
+            f'<div class="rx-stat {cls}">{_esc(label)}</div>'
+            f'</div>'
+        )
+    rows_html = "\n".join(rows) if rows else '<div class="sales-meta">처방 대상 없음</div>'
+
+    return (
+        f'<div class="section-wrap">'
+        f'<div class="section-title">이번 주 처방</div>'
+        f'<div class="sales-meta">{_esc(meta)}</div>'
+        f'<div class="rx-list">{rows_html}</div>'
         f'</div>'
     )
 
@@ -297,6 +403,19 @@ def build_dashboard_html(date: str) -> str:
             '</div>'
         )
 
+    # ── 이번 주 처방 섹션 (독립 try — batch_result 없으면 섹션 숨김) ───────
+    prescription_section_html = ""
+    try:
+        batch = _load_batch_result()
+        prescription_section_html = _build_prescription_html(batch)
+    except Exception:
+        prescription_section_html = (
+            '<div class="section-wrap">'
+            '<div class="section-title">이번 주 처방</div>'
+            '<div class="sales-meta" style="color:var(--warn)">처방 섹션 오류</div>'
+            '</div>'
+        )
+
     # ── 7일 차트 데이터 (date-6 ~ date, 빈 날짜는 0) ─────────────────────
     d0           = datetime.date.fromisoformat(date)
     chart_window = [d0 - datetime.timedelta(days=i) for i in range(6, -1, -1)]
@@ -405,6 +524,30 @@ def build_dashboard_html(date: str) -> str:
     .stier-orange{{background:rgba(240,165,0,.2);color:#f0a500}}
     .stier-gray{{background:rgba(139,148,158,.2);color:#8b949e}}
     .stier-blue{{background:rgba(88,166,255,.2);color:#58a6ff}}
+    /* ── 이번 주 처방 섹션 ── */
+    .rx-row{{
+      display:flex;align-items:flex-start;gap:8px;
+      padding:9px 0;border-bottom:1px solid var(--border)
+    }}
+    .rx-row:last-child{{border-bottom:none}}
+    .rx-rank{{font-size:.72rem;color:var(--muted);min-width:24px;padding-top:2px}}
+    .rx-info{{flex:1;min-width:0}}
+    .rx-name{{
+      font-size:.84rem;font-weight:500;
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:3px
+    }}
+    .rx-meta{{font-size:.7rem;color:var(--muted);margin-bottom:2px}}
+    .rx-detail{{
+      font-size:.72rem;color:var(--text);
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis
+    }}
+    .rx-stat{{
+      font-size:.65rem;font-weight:700;padding:2px 7px;
+      border-radius:5px;white-space:nowrap;align-self:center
+    }}
+    .pstat-ok{{background:rgba(63,185,80,.2);color:#3fb950}}
+    .pstat-hold{{background:rgba(139,148,158,.2);color:#8b949e}}
+    .pstat-fail{{background:rgba(248,81,73,.2);color:#f85149}}
   </style>
 </head>
 <body>
@@ -442,6 +585,8 @@ def build_dashboard_html(date: str) -> str:
 {alerts_html}
 
 {sales_section_html}
+
+{prescription_section_html}
 
 <footer>마지막 갱신: {_esc(updated_kst)}</footer>
 

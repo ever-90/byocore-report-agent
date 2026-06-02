@@ -114,6 +114,15 @@ python -m src.kakao_auth       # 사용법(docstring) 출력
       - Graceful: scan_summary.json 없으면 "세일즈 데이터 없음" (기존 섹션 영향 0, 독립 try)
       - XSS 방지: `_esc()` 전체 적용, 22/22 자동 검증 통과 ✅
       - 결과: `docs/index.html` 8,401 bytes (4,451 → 8,401)
+- [x] **대시보드 "이번 주 처방" 섹션** (2026-06-02): `src/dashboard.py` → `_load_batch_result()` + `_build_prescription_html()`
+      - 데이터: `byocore-supervisor-agent/data/batch_result.json` (경로 `_DEFAULT_BATCH_RESULT`, 환경변수 `BATCH_RESULT_PATH` override)
+      - 표시: 위험제품별 위험도+GEO인용률 + 3-상태 배지 (처방✓ 초록/보류 회색/실패 빨강)
+        · 처방 → [초안] 콘텐츠 제목(요약, 전문 X) / 보류 → "own_facts 사실 데이터 필요" / 실패 → "디자이너 호출 실패"
+      - ★ 가격 마스킹: `진단.가격위치` 필드 **아예 안 읽음** (위험도/GEO/처방상태만). 합성 자사가 노출 테스트 0건 ✅
+      - Graceful: batch_result.json 없으면 섹션 숨김(빈 문자열), 독립 try
+      - 세일즈 섹션 패턴 동일(section-wrap/title 재사용), 모바일 말줄임(ellipsis)
+      - VERIFY: 처방2/보류3 렌더 / 3-상태 배지 / 가격 0건 / graceful 숨김 / 회귀0(매출·인용률·세일즈) / body순서 세일즈→처방→footer
+      - 결과: `docs/index.html` 11,281 bytes
 - [x] **세일즈 주간 스캔 자동화** (2026-06-02): `run_sales_scan.bat` 신규 생성
       - 흐름: [1] 세일즈 전제품 스캔 (Naver API ~37회 + GEO) → [2] 대시보드 재생성 → [3] git push
       - RC 설계: [1] 스캔 RC만 exit code. [2][3] 독립 (실패해도 RC 불변). [1] 실패해도 [2][3] 계속.
