@@ -107,7 +107,39 @@ python -m src.kakao_auth       # 사용법(docstring) 출력
       - read_order 회귀검증: 어제(2026-05-31) 주문 73건 정상 조회 → 기존 기능 영향 없음 ✅
       - 공유 파일: `data/own_products.json` ([{product_name, price, product_code, product_no, display, sold_out}])
       - 세일즈 에이전트 연동: `OWN_PRODUCTS_PATH` 환경변수로 경로 override 가능
-- [ ] `schedule` 기반 스케줄러 (일/주/월 트리거)
+- [x] **세일즈 위험 섹션 대시보드 통합** (2026-06-02): `src/dashboard.py` → `_load_sales_summary()` + `_build_sales_html()`
+      - 데이터: `byocore-sales-agent/data/scan_summary.json` (경로: `_DEFAULT_SCAN_SUMMARY`, 환경변수 `SCAN_SUMMARY_PATH` override)
+      - 표시: 원인태그 배지(콘텐츠없음/질의미등록/가격불균형/니치) + top_risk 5개 (제품명·위험도·GEO인용률·측정유형·원인태그)
+      - ★ 가격 마스킹: `자사가` 필드 읽지도 않음 (대시보드 Public 노출 방지 완전 보장)
+      - Graceful: scan_summary.json 없으면 "세일즈 데이터 없음" (기존 섹션 영향 0, 독립 try)
+      - XSS 방지: `_esc()` 전체 적용, 22/22 자동 검증 통과 ✅
+      - 결과: `docs/index.html` 8,401 bytes (4,451 → 8,401)
+- [x] **세일즈 주간 스캔 자동화** (2026-06-02): `run_sales_scan.bat` 신규 생성
+      - 흐름: [1] 세일즈 전제품 스캔 (Naver API ~37회 + GEO) → [2] 대시보드 재생성 → [3] git push
+      - RC 설계: [1] 스캔 RC만 exit code. [2][3] 독립 (실패해도 RC 불변). [1] 실패해도 [2][3] 계속.
+      - run_weekly/daily/monthly.bat 과 완전 독립 (기존 리포트 RC 보호)
+      - Python 절대경로(v3.13), UTF-8/CP949, 로그: `logs/sales_scan_YYYYMMDD.log`
+      - 수동 실행 검증: 37개 스캔 OK, 대시보드 재생성 OK, git push OK (exit 0) ✅
+      - 회귀: run_weekly.bat 원본 5/5 무결성 검증 ✅
+      - 작업 스케줄러 등록 명령 (관리자 CMD):
+        ```
+        schtasks /create /tn "BYOCORE Sales Weekly Scan" /tr "C:\Users\Administrator\byocore-report-agent\run_sales_scan.bat" /sc WEEKLY /d MON /st 09:00 /f
+        ```
+- [x] **GEO→디자이너 연동 어댑터** (2026-06-02): `src/collectors/geo_uncovered.py` 신규 (A안: question 텍스트 연동키)
+      - `fetch_uncovered_questions(sheet_id, sa_path, category, exclude_truncated, exclude_orphan_ids)` → list[7필드 dict]
+      - JOIN: GEO_ANALYSIS(UNCOVERED, intent_id별 measured_at 최신 1건) ⨝ INTENT_LIBRARY(question, source) LEFT
+        · prompt_id == intent_id 실측 확인 → intent_id 단일 조인키
+      - 정규화: `re.sub(r'\s+', ' ', q).strip()` (영문/브랜드명 케이스 보존, .lower() 미적용)
+      - is_truncated: source=='pool_promote_v1' AND `^[가-힣]{1,2}\s` (스크래퍼 잘림). 509건 탐지
+        · ALLOWLIST=('가바',) 성분명 오탐 방지 → question_raw 가 ALLOWLIST 어두로 시작하면 False (가바 2건 통과 확인)
+      - exclude_orphan_ids: LIBRARY 메인탭 미매칭 112 unique ID(ARCHIVE_v2 소속) 제외
+      - 멱등: intent_id별 최신 + (category, question_normalized) 정렬 → 같은 시트 상태=같은 출력
+      - 클라이언트 재사용: geo_citation `_service_account_path`/`SCOPES` 임포트 (신규 클라이언트 0)
+      - VERIFY: V1 ALLOWLIST 오탐차단 / V2 스키마7필드 / V3 trunc=0 / V4 고아=0 / **V5 subprocess e2e** 전부 PASS
+        · V5: clean 출력 question 3개 → input.json → `python -m src.designer --input` (cwd=designer-agent) → returncode 0, geo_qa_blocks 3개, html_detail 4,062자
+        · ⚠️ 함정 발견: 부모 환경의 빈 ANTHROPIC_API_KEY 가 designer load_dotenv(override=False) 막음 → subprocess env 에서 빈 ANTHROPIC_* 제거 (designer 자기 .env 로 로드, 키 충돌 해소)
+      - clean 출력: 749건 (orphan+truncated 제외), READ-ONLY (시트 쓰기/측정/트리거 0)
+- [ ] `schedule` 기반 스케줄러 (일/주/월 트리거) — 세일즈 주간 스캔은 bat+schtasks로 구현 완료
 - [ ] 토큰 만료시각(timestamp) 추적 및 사전 갱신
 - [x] 카카오 본문 길이 초과 대응 — 일간·주간·월간 모두 **200자 우선순위 트림 가드** 적용 완료
 
