@@ -1,0 +1,158 @@
+@echo off
+REM ============================================================
+REM  run_sales_scan.bat - BYOCORE Sales Weekly Scan + Dashboard
+REM  (Windows Task Scheduler - weekly, Monday recommended)
+REM
+REM  [1] Sales full scan -> scan_result.json + scan_summary.json
+REM      (Naver API ~37 calls + GEO sheet, approx 3-5 min)
+REM  [2] Report dashboard rebuild -> docs/index.html
+REM  [3] git add/commit/push -> GitHub Pages auto deploy
+REM
+REM  Log: logs\sales_scan_YYYYMMDD.log
+REM
+REM  RC design:
+REM    [1] scan RC is the final exit code.
+REM    [2][3] run independently (failures do NOT change RC).
+REM    If [1] fails, [2][3] still run (old scan_summary used).
+REM    If [2] fails, [3] is skipped.
+REM
+REM  This bat is FULLY INDEPENDENT of run_weekly/daily/monthly.bat.
+REM  Python absolute path (v3.13, collision prevention).
+REM  Naver API: ~37 calls/run. Run at most once per week.
+REM ============================================================
+setlocal
+
+chcp 65001 >nul
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
+
+set "PYTHON=C:\Users\Administrator\AppData\Local\Programs\Python\Python313\python.exe"
+set "SALES_DIR=C:\Users\Administrator\byocore-sales-agent"
+set "REPORT_DIR=C:\Users\Administrator\byocore-report-agent"
+
+cd /d "%REPORT_DIR%"
+if errorlevel 1 (
+    echo [FATAL] Cannot cd to REPORT_DIR: %REPORT_DIR%
+    endlocal & exit /b 1
+)
+
+if not exist "logs" mkdir "logs"
+
+set "TODAY="
+for /f "delims=" %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd"') do set "TODAY=%%i"
+if not defined TODAY set "TODAY=00000000"
+set "LOGFILE=%REPORT_DIR%\logs\sales_scan_%TODAY%.log"
+set "DATE_ISO=%TODAY:~0,4%-%TODAY:~4,2%-%TODAY:~6,2%"
+
+echo.>>"%LOGFILE%"
+echo ============================================================>>"%LOGFILE%"
+echo [%date% %time%] run_sales_scan.bat start>>"%LOGFILE%"
+echo   SALES_DIR : %SALES_DIR%>>"%LOGFILE%"
+echo   REPORT_DIR: %REPORT_DIR%>>"%LOGFILE%"
+echo ------------------------------------------------------------>>"%LOGFILE%"
+
+REM ================================================================
+REM  [1] Sales scan (CORE - only this RC becomes exit code)
+REM      Failure -> [2][3] still run with old scan_summary.json
+REM ================================================================
+echo [%date% %time%] [1] Sales scan start (approx 3-5 min)...>>"%LOGFILE%"
+cd /d "%SALES_DIR%"
+if errorlevel 1 (
+    echo [%date% %time%] [1] Cannot cd to SALES_DIR>>"%LOGFILE%"
+    set "RC=1"
+    goto :STEP2
+)
+"%PYTHON%" scan.py >>"%LOGFILE%" 2>&1
+set "RC=%ERRORLEVEL%"
+cd /d "%REPORT_DIR%"
+
+echo ------------------------------------------------------------>>"%LOGFILE%"
+if "%RC%"=="0" (
+    echo [%date% %time%] [1] Sales scan OK exit 0>>"%LOGFILE%"
+) else (
+    echo [%date% %time%] [1] Sales scan ERROR exit %RC% - continuing with old summary>>"%LOGFILE%"
+)
+
+:STEP2
+REM ================================================================
+REM  [2] Dashboard rebuild (independent - failure does not change RC)
+REM ================================================================
+echo [%date% %time%] [2] Dashboard rebuild start...>>"%LOGFILE%"
+"%PYTHON%" -m src.dashboard >>"%LOGFILE%" 2>&1
+if errorlevel 1 (
+    echo [%date% %time%] [2] Dashboard failed - git push skipped>>"%LOGFILE%"
+    goto :END_GIT
+)
+echo [%date% %time%] [2] Dashboard rebuild OK>>"%LOGFILE%"
+
+REM ================================================================
+REM  [3] GitHub Pages push (independent - failure does not change RC)
+REM ================================================================
+echo [%date% %time%] [3] git add/commit/push start (%DATE_ISO%)>>"%LOGFILE%"
+
+git add docs/index.html >>"%LOGFILE%" 2>&1
+
+git diff --cached --quiet
+if errorlevel 1 (
+    git commit -m "chore: sales dashboard update %DATE_ISO%" >>"%LOGFILE%" 2>&1
+    if errorlevel 1 (
+        echo [%date% %time%] [3] git commit failed - push skipped>>"%LOGFILE%"
+        goto :END_GIT
+    )
+    git push >>"%LOGFILE%" 2>&1
+    if errorlevel 1 (
+        echo [%date% %time%] [3] git push failed - ignored>>"%LOGFILE%"
+    ) else (
+        echo [%date% %time%] [3] git push OK - GitHub Pages deployed>>"%LOGFILE%"
+    )
+) else (
+    echo [%date% %time%] [3] docs/index.html unchanged - push skipped>>"%LOGFILE%"
+)
+
+:END_GIT
+REM ================================================================
+REM  [4] Supervisor batch (only if sales scan [1] succeeded)
+REM      Diagnose + prescribe for risk products (designer subprocess).
+REM      Skipped if scan failed (avoid stale scan_summary).
+REM      Does NOT change final exit code (scan RC preserved).
+REM      Supervisor --batch exit: 1 = all designer calls failed, 0 = otherwise.
+REM ================================================================
+set "SUPERVISOR_DIR=C:\Users\Administrator\byocore-supervisor-agent"
+set "BATCH_RESULT=%SUPERVISOR_DIR%\data\batch_result.json"
+
+if not "%RC%"=="0" (
+    echo [%date% %time%] [4] Batch SKIPPED - scan failed ^(RC=%RC%^), avoid stale data>>"%LOGFILE%"
+    goto :END_ALL
+)
+
+echo [%date% %time%] [4] Supervisor batch start ^(designer LLM calls, may take minutes^)...>>"%LOGFILE%"
+cd /d "%SUPERVISOR_DIR%"
+if errorlevel 1 (
+    echo [%date% %time%] [4][WARN] Cannot cd to SUPERVISOR_DIR - batch skipped>>"%LOGFILE%"
+    cd /d "%REPORT_DIR%"
+    goto :END_ALL
+)
+"%PYTHON%" -m src.supervisor --batch >>"%LOGFILE%" 2>&1
+set "BRC=%ERRORLEVEL%"
+cd /d "%REPORT_DIR%"
+
+if "%BRC%"=="0" (
+    echo [%date% %time%] [4] Batch OK ^(BRC=0^)>>"%LOGFILE%"
+) else if "%BRC%"=="1" (
+    echo [%date% %time%] [4][WARN] Batch all-fail ^(BRC=1^) - every designer call failed, check log above>>"%LOGFILE%"
+) else (
+    echo [%date% %time%] [4][WARN] Batch unexpected exit ^(BRC=%BRC%^)>>"%LOGFILE%"
+)
+
+if exist "%BATCH_RESULT%" (
+    echo [%date% %time%] [4] batch_result.json present: %BATCH_RESULT%>>"%LOGFILE%"
+) else (
+    echo [%date% %time%] [4][WARN] batch_result.json missing - batch may have crashed>>"%LOGFILE%"
+)
+
+:END_ALL
+echo ============================================================>>"%LOGFILE%"
+echo [%date% %time%] run_sales_scan.bat end (exit %RC%)>>"%LOGFILE%"
+
+endlocal & exit /b %RC%
+

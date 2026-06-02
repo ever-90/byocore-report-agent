@@ -125,6 +125,11 @@ python -m src.kakao_auth       # 사용법(docstring) 출력
         ```
         schtasks /create /tn "BYOCORE Sales Weekly Scan" /tr "C:\Users\Administrator\byocore-report-agent\run_sales_scan.bat" /sc WEEKLY /d MON /st 09:00 /f
         ```
+      - **[4] 수퍼바이저 배치 자동 실행 추가** (2026-06-02): 스캔 직후 위험제품 일괄 진단+처방
+        · `[1]` 스캔 RC==0 일 때만 배치(`python -m src.supervisor --batch`) — 실패 시 스킵(낡은 데이터 방지)
+        · BRC 분기: 0=OK / 1=WARN 전부실패 / 기타=WARN (조용한 실패 방지, batch_result.json 존재 확인)
+        · 배치 RC는 최종 exit 안 바꿈(scan RC 보존), Python 절대경로, CRLF 정규화
+        · VERIFY: 배치 단독 exit 0(처방 2/보류 3/실패 0, 이너케어 designer=ok html=True) / RC≠0 스킵·BRC 3분기 / [1][2][3] 회귀 0
 - [x] **GEO→디자이너 연동 어댑터** (2026-06-02): `src/collectors/geo_uncovered.py` 신규 (A안: question 텍스트 연동키)
       - `fetch_uncovered_questions(sheet_id, sa_path, category, exclude_truncated, exclude_orphan_ids)` → list[7필드 dict]
       - JOIN: GEO_ANALYSIS(UNCOVERED, intent_id별 measured_at 최신 1건) ⨝ INTENT_LIBRARY(question, source) LEFT
