@@ -38,6 +38,13 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _DOCS_DIR  = os.path.join(_REPO_ROOT, "docs")
 _OUT_FILE  = os.path.join(_DOCS_DIR, "index.html")
 
+# 세일즈 에이전트가 생성한 scan_summary.json 기본 경로
+# (환경변수 SCAN_SUMMARY_PATH 로 override 가능)
+_DEFAULT_SCAN_SUMMARY = os.path.join(
+    os.path.dirname(_REPO_ROOT),           # C:\Users\Administrator
+    "byocore-sales-agent", "data", "scan_summary.json",
+)
+
 
 # ---------------------------------------------------------------------------
 # 유틸
@@ -45,6 +52,114 @@ _OUT_FILE  = os.path.join(_DOCS_DIR, "index.html")
 def _esc(s) -> str:
     """HTML 특수문자 이스케이프 (XSS 방지)."""
     return _html_mod.escape(str(s))
+
+
+# ---------------------------------------------------------------------------
+# 세일즈 위험 섹션 (READ-ONLY · 독립 try)
+# ---------------------------------------------------------------------------
+def _load_sales_summary() -> dict | None:
+    """
+    scan_summary.json 읽기. 없거나 파싱 실패 시 None (graceful degradation).
+    ★ 자사가(가격) 필드는 이 함수에서도, 렌더링에서도 절대 참조하지 않는다.
+    """
+    path = (os.getenv("SCAN_SUMMARY_PATH") or "").strip() or _DEFAULT_SCAN_SUMMARY
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+# 원인태그 → (배지 CSS 클래스, 표시 문자열)
+_BADGE_CFG = {
+    "콘텐츠없음": "badge-orange",
+    "질의미등록": "badge-yellow",
+    "가격불균형": "badge-red",
+    "니치":       "badge-gray",
+    "질의없음":   "badge-muted",
+}
+# measurement_type → 짧은 라벨
+_MTYPE_LABEL = {"전용": "[전]", "희석": "[희]", "없음": "[없]"}
+# 위험_등급 → CSS 클래스 (기존 --warn 팔레트 재사용)
+_TIER_CLS = {
+    "위험": "stier-red",
+    "주의": "stier-orange",
+    "보통": "stier-gray",
+    "양호": "stier-blue",
+}
+
+
+def _build_sales_html(summary: dict | None) -> str:
+    """
+    세일즈 위험 Top 섹션 HTML 반환.
+    summary 가 None 이면 '세일즈 데이터 없음' graceful 표시.
+    ★ 자사가(가격) 절대 미렌더링 — top_risk 항목에서 읽지 않음.
+    """
+    if summary is None:
+        return (
+            '<div class="section-wrap">'
+            '<div class="section-title">세일즈 위험 Top</div>'
+            '<div class="sales-meta" style="color:var(--muted);font-size:.78rem">'
+            '세일즈 데이터 없음 — scan_summary.json 미생성'
+            '</div></div>'
+        )
+
+    # 기준일: updated_at 앞 10자(YYYY-MM-DD)만 사용
+    updated  = _esc(str(summary.get("updated_at", ""))[:10])
+    total    = int(summary.get("total_scanned", 0))
+    risk_sum = summary.get("risk_summary", {})
+    top_risk = summary.get("top_risk", [])
+
+    # 원인 배지
+    badges = []
+    for tag, cls in _BADGE_CFG.items():
+        cnt = int(risk_sum.get(tag, 0))
+        if cnt > 0:
+            badges.append(f'<span class="badge {cls}">{_esc(tag)} {cnt}</span>')
+    badges_html = "\n".join(badges)
+
+    # top_risk 행 (★ 자사가 필드 참조 없음)
+    rows = []
+    for r in top_risk:
+        rank       = int(r.get("rank", 0))
+        name_full  = str(r.get("제품명", ""))
+        # 제품명이 길면 앞 22자 + "…" 으로 잘라서 폰 화면에 맞춤
+        name_short = (name_full[:22] + "…") if len(name_full) > 22 else name_full
+        risk_score = r.get("위험도")
+        geo_rate   = r.get("geo인용률")
+        mtype      = str(r.get("measurement_type", ""))
+        cause      = str(r.get("원인태그", ""))
+        tier       = str(r.get("위험_등급", ""))
+
+        score_s = f"{risk_score:.0f}" if risk_score is not None else "—"
+        geo_s   = f"{geo_rate:.1f}%" if geo_rate is not None else "없음"
+        mt_s    = _MTYPE_LABEL.get(mtype, _esc(mtype))
+        tier_c  = _TIER_CLS.get(tier, "stier-gray")
+
+        rows.append(
+            f'<div class="sales-row">'
+            f'<div class="sales-rank">#{rank}</div>'
+            f'<div class="sales-info">'
+            f'<div class="sales-name">{_esc(name_short)}</div>'
+            f'<div class="sales-detail">'
+            f'위험도 {score_s} · GEO {_esc(geo_s)} · {mt_s} {_esc(cause)}'
+            f'</div></div>'
+            f'<div class="sales-tier {tier_c}">{_esc(tier)}</div>'
+            f'</div>'
+        )
+    rows_html = "\n".join(rows)
+
+    return (
+        f'<div class="section-wrap">'
+        f'<div class="section-title">세일즈 위험 Top</div>'
+        f'<div class="sales-meta">스캔 {total}개 · 기준 {updated}</div>'
+        f'<div class="risk-badges">{badges_html}</div>'
+        f'<div class="sales-list">{rows_html}</div>'
+        f'</div>'
+    )
 
 
 def _yesterday_kst() -> str:
@@ -169,6 +284,19 @@ def build_dashboard_html(date: str) -> str:
     if all_items:
         alerts_html = '<div class="alert-section">\n' + "\n".join(all_items) + '\n</div>'
 
+    # ── 세일즈 위험 섹션 (독립 try — 실패해도 기존 대시보드 안 깨짐) ──────
+    sales_section_html = ""
+    try:
+        sales_summary = _load_sales_summary()
+        sales_section_html = _build_sales_html(sales_summary)
+    except Exception:
+        sales_section_html = (
+            '<div class="section-wrap">'
+            '<div class="section-title">세일즈 위험 Top</div>'
+            '<div class="sales-meta" style="color:var(--warn)">세일즈 섹션 오류</div>'
+            '</div>'
+        )
+
     # ── 7일 차트 데이터 (date-6 ~ date, 빈 날짜는 0) ─────────────────────
     d0           = datetime.date.fromisoformat(date)
     chart_window = [d0 - datetime.timedelta(days=i) for i in range(6, -1, -1)]
@@ -236,6 +364,47 @@ def build_dashboard_html(date: str) -> str:
       text-align:center;color:var(--muted);font-size:.7rem;
       border-top:1px solid var(--border);padding-top:12px
     }}
+    /* ── 세일즈 위험 섹션 ── */
+    .section-wrap{{
+      background:var(--card);border:1px solid var(--border);
+      border-radius:10px;padding:14px;margin-bottom:16px
+    }}
+    .section-title{{
+      font-size:.68rem;color:var(--muted);
+      text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px
+    }}
+    .sales-meta{{font-size:.72rem;color:var(--muted);margin-bottom:10px}}
+    .risk-badges{{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}}
+    .badge{{
+      font-size:.7rem;font-weight:600;padding:3px 8px;
+      border-radius:12px;white-space:nowrap
+    }}
+    .badge-orange{{background:rgba(240,165,0,.18);color:#f0a500}}
+    .badge-yellow{{background:rgba(212,192,0,.18);color:#cbb800}}
+    .badge-red{{background:rgba(248,81,73,.18);color:#f85149}}
+    .badge-gray{{background:rgba(139,148,158,.18);color:#8b949e}}
+    .badge-muted{{background:rgba(139,148,158,.12);color:#8b949e}}
+    .sales-list{{}}
+    .sales-row{{
+      display:flex;align-items:flex-start;gap:8px;
+      padding:9px 0;border-bottom:1px solid var(--border)
+    }}
+    .sales-row:last-child{{border-bottom:none}}
+    .sales-rank{{font-size:.72rem;color:var(--muted);min-width:24px;padding-top:2px}}
+    .sales-info{{flex:1;min-width:0}}
+    .sales-name{{
+      font-size:.84rem;font-weight:500;
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:3px
+    }}
+    .sales-detail{{font-size:.7rem;color:var(--muted)}}
+    .sales-tier{{
+      font-size:.65rem;font-weight:700;padding:2px 6px;
+      border-radius:5px;white-space:nowrap;align-self:center
+    }}
+    .stier-red{{background:rgba(248,81,73,.2);color:#f85149}}
+    .stier-orange{{background:rgba(240,165,0,.2);color:#f0a500}}
+    .stier-gray{{background:rgba(139,148,158,.2);color:#8b949e}}
+    .stier-blue{{background:rgba(88,166,255,.2);color:#58a6ff}}
   </style>
 </head>
 <body>
@@ -271,6 +440,8 @@ def build_dashboard_html(date: str) -> str:
 </div>
 
 {alerts_html}
+
+{sales_section_html}
 
 <footer>마지막 갱신: {_esc(updated_kst)}</footer>
 
