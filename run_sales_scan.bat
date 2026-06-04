@@ -1,12 +1,13 @@
 @echo off
 REM ============================================================
-REM  run_sales_scan.bat - BYOCORE Sales Weekly Scan + Dashboard
-REM  (Windows Task Scheduler - weekly, Monday recommended)
+REM  run_sales_scan.bat - BYOCORE Sales Daily Scan + Dashboard
+REM  (Windows Task Scheduler - daily 09:00)
 REM
 REM  [1] Sales full scan -> scan_result.json + scan_summary.json
 REM      (Naver API ~37 calls + GEO sheet, approx 3-5 min)
 REM  [2] Report dashboard rebuild -> docs/index.html
 REM  [3] git add/commit/push -> GitHub Pages auto deploy
+REM  [4] Supervisor batch INCREMENTAL -> prescribe new/changed risks only (cost gate)
 REM
 REM  Log: logs\sales_scan_YYYYMMDD.log
 REM
@@ -18,7 +19,7 @@ REM    If [2] fails, [3] is skipped.
 REM
 REM  This bat is FULLY INDEPENDENT of run_weekly/daily/monthly.bat.
 REM  Python absolute path (v3.13, collision prevention).
-REM  Naver API: ~37 calls/run. Run at most once per week.
+REM  Naver API: ~37 calls/run. Daily. [4] designer LLM gated by incremental ledger.
 REM ============================================================
 setlocal
 
@@ -111,11 +112,12 @@ if errorlevel 1 (
 
 :END_GIT
 REM ================================================================
-REM  [4] Supervisor batch (only if sales scan [1] succeeded)
-REM      Diagnose + prescribe for risk products (designer subprocess).
-REM      Skipped if scan failed (avoid stale scan_summary).
+REM  [4] Supervisor batch INCREMENTAL (only if sales scan [1] succeeded)
+REM      Diagnose all risk products + prescribe ONLY new/changed ones (cost gate).
+REM      Already-prescribed (same own_facts hash) -> designer skipped (0 LLM).
+REM      Skipped entirely if scan failed (avoid stale scan_summary).
 REM      Does NOT change final exit code (scan RC preserved).
-REM      Supervisor --batch exit: 1 = all designer calls failed, 0 = otherwise.
+REM      --batch-incremental exit: 1 = all designer calls failed, 0 = otherwise.
 REM ================================================================
 set "SUPERVISOR_DIR=C:\Users\Administrator\byocore-supervisor-agent"
 set "BATCH_RESULT=%SUPERVISOR_DIR%\data\batch_result.json"
@@ -125,14 +127,14 @@ if not "%RC%"=="0" (
     goto :END_ALL
 )
 
-echo [%date% %time%] [4] Supervisor batch start ^(designer LLM calls, may take minutes^)...>>"%LOGFILE%"
+echo [%date% %time%] [4] Supervisor batch (incremental) start ^(new/changed only^)...>>"%LOGFILE%"
 cd /d "%SUPERVISOR_DIR%"
 if errorlevel 1 (
     echo [%date% %time%] [4][WARN] Cannot cd to SUPERVISOR_DIR - batch skipped>>"%LOGFILE%"
     cd /d "%REPORT_DIR%"
     goto :END_ALL
 )
-"%PYTHON%" -m src.supervisor --batch >>"%LOGFILE%" 2>&1
+"%PYTHON%" -m src.supervisor --batch-incremental >>"%LOGFILE%" 2>&1
 set "BRC=%ERRORLEVEL%"
 cd /d "%REPORT_DIR%"
 
