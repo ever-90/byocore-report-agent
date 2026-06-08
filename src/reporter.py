@@ -761,6 +761,15 @@ def _cli() -> None:
         raise
     _preview_and_send(text)
 
+    # PERF_DAILY 시트 upsert (독립 try — 카톡 리포트는 이미 발송됨, 실패해도 무방)
+    # GAS byo_dailyReport 비활성(토큰 충돌 회피) 대체: Python 이 매일 매출을 시트에 직접 기록.
+    try:
+        from . import perf_daily
+        res = perf_daily.sync_date(date)
+        print(f"[PERF_DAILY] 시트 upsert: {res}")
+    except Exception as e:
+        print(f"[PERF_DAILY] 시트 upsert 실패(무시): {type(e).__name__}: {e}")
+
 
 if __name__ == "__main__":
     _cli()

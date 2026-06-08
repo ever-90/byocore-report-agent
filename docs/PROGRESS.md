@@ -65,6 +65,16 @@ python -m src.kakao_auth       # 사용법(docstring) 출력
       - [x] **월간 리포트** (2026-05-30): build_monthly_report()/send_monthly_report() + CLI `monthly`, 직전30일vs전월30일, net합계+전월比 / 일평균+최고·최저일 / KPI달성률(config경유, 미설정→"목표 미설정") / 인용추세(비-biased 당월만) / Top이슈3(median±30%), **200자 우선순위 트림 가드**(일평균5>KPI4>인용3>이슈2, 제목·net·푸터 보호), 독립 try, 실발송 179자
         · KPI 구조: MONTHLY_SALES_TARGET(.env) 설정 시 달성률 자동 계산, 미설정이면 "KPI 목표 미설정"
 - [x] 이상 알림 임계치 정의 및 탐지 — 매출 ±30%(7일 median, 평균 아님) / 인용 건수변화(단일일 %비교 금지·biased 제외·2개미만 skip)
+- [x] **PERF_DAILY 시트 upsert (GAS 비활성 복구 — 복구 방향 A)** (2026-06-08): `src/perf_daily.py`
+      - 배경: GAS byo_dailyReport 가 Python reporter 와 Cafe24 토큰 충돌 회피로 5/30 비활성 → PERF_DAILY 9일 공백
+      - Python reporter 가 이미 매일 수집하는 매출을 GEO 시트 BYOCORE_PERF_DAILY 에 직접 upsert (GAS 재가동·재인증 X → 토큰 충돌 영구 해결)
+      - `upsert_perf_daily`(READ-then-WRITE): 같은 date 있으면 B/C/I(amount/order_count/updated_at)만 갱신(나머지 컬럼 보존), 없으면 append
+      - amount = **gross**(total_payment_amount, 주문 payment_amount 합 — 에버 확정). ★ new_members/sold_out/new_reviews/reconcile_* 는 reporter 미수집 → **빈칸**(가짜값 0 금지)
+      - scope=spreadsheets(rw, geo_citation readonly 와 별도), 시트 ID=config.GEO_SHEET_ID, 쓰기 전 백업(`data/sheet_backups/`, gitignore)
+      - reporter `_cli` 일간 분기에 `perf_daily.sync_date(date)` **독립 try** 통합 → run_daily.bat 으로 매일 자동
+      - **백필 6/1~6/8 완료**: 8/8 시트값=실시간 gross 일치 ✅ (6/1 첫호출 일시 API 0 → 재sync 정정). 멱등 검증(재실행 update, 중복행 0)
+      - GAS 차이 고지: GAS amount=Cafe24 대시보드 KPI(dashAmount) 우선, reporter 는 주문합산 → 5/29 경계 소폭 불연속(취소 적은 날 거의 동일)
+      - CLI: `python -m src.perf_daily [date]` / `python -m src.perf_daily backfill <start> <end>`
 - [x] **판단 카드 v1 (GEO×매출×퍼널프록시)** (2026-06-01)
       - _collect_baseline_full(): 7일 베이스라인 1회 수집 → anomaly·funnel proxy 공용
       - _funnel_proxy(): AOV(±30%)/취소율 플래그 / _judgment_card(): 8-case 매칭 가설 1줄
