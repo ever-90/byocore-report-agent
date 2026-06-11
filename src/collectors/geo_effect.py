@@ -49,6 +49,7 @@ import argparse
 import json
 import re
 import sys
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import gspread
@@ -61,6 +62,26 @@ from .geo_citation import SCOPES, _service_account_path   # 인증 재사용(무
 _TAB_INTENT   = "BYOCORE_INTENT_LIBRARY"
 _TAB_PROMPTS  = "BYOCORE_GEO_PROMPTS"
 _TAB_ANALYSIS = "BYOCORE_GEO_ANALYSIS"
+
+# publish_tracking 기본경로 (geo_monitor 와 동일 패턴, PUBLISH_TRACKING_PATH override)
+_DEFAULT_TRACKING = Path(__file__).resolve().parents[2].parent \
+    / "byocore-supervisor-agent" / "data" / "publish_tracking.json"
+
+
+def _latest_published_at() -> Optional[str]:
+    """publish_tracking 최근 published_at 날짜(YYYY-MM-DD). 없음/파손 → None."""
+    raw = (config.get("PUBLISH_TRACKING_PATH") or "").strip()
+    path = Path(raw) if raw else _DEFAULT_TRACKING
+    try:
+        t = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(t, dict):
+        return None
+    dates = [str(e.get("published_at", ""))[:10]
+             for no, e in t.items()
+             if not str(no).startswith("_") and isinstance(e, dict) and e.get("published_at")]
+    return max(dates) if dates else None
 
 _SPACE_RE = re.compile(r"\s+")
 
@@ -315,8 +336,19 @@ def build_report(
     }
 
 
-def run(publish_date: str, products: Optional[List[dict]] = None) -> dict:
-    """READ-ONLY 실행: 시트 1회 로드 → 발행효과 리포트 dict."""
+def run(publish_date: Optional[str] = None, products: Optional[List[dict]] = None) -> dict:
+    """
+    READ-ONLY 실행: 시트 1회 로드 → 발행효과 리포트 dict.
+    publish_date 생략 시 publish_tracking 최근 published_at 자동 사용.
+    발행이력 전무(anchor None) → ValueError (어제날짜 억지 anchor 안 잡음 — 가짜 A/B 방지).
+    """
+    if not publish_date:
+        publish_date = _latest_published_at()
+    if not publish_date:
+        raise ValueError(
+            "발행 anchor 없음: publish_tracking 에 published_at 이 없습니다 "
+            "(--publish-date 로 명시하거나 발행 추적 후 재시도)."
+        )
     ss = _open_spreadsheet()
     qmap = _fetch_query_map(ss)
     rows = _fetch_analysis_rows(ss)
@@ -379,7 +411,8 @@ def _cli() -> None:
 
     ap = argparse.ArgumentParser(prog="geo_effect",
                                  description="발행 제품 GEO 인용 추적 (READ-ONLY).")
-    ap.add_argument("--publish-date", required=True, help="발행 앵커일 YYYY-MM-DD (이 날짜부터 after)")
+    ap.add_argument("--publish-date", required=False, default=None,
+                    help="발행 앵커일 YYYY-MM-DD (생략 시 publish_tracking 최근 published_at 자동)")
     ap.add_argument("--products-file", help="제품 키워드 JSON override (스키마 동일)")
     ap.add_argument("--report", action="store_true", help="사람용 텍스트 출력(미지정 시 순수 JSON)")
     args = ap.parse_args()
@@ -393,9 +426,13 @@ def _cli() -> None:
             _err(f"products-file 읽기 실패: {e}")
             sys.exit(1)
 
-    _err(f"시트 로드 + 발행효과 산출 시작 — 앵커 {args.publish_date}")
+    _err(f"시트 로드 + 발행효과 산출 시작 — 앵커 {args.publish_date or '(자동: publish_tracking 최근)'}")
     try:
         rep = run(args.publish_date, products)
+    except ValueError as e:
+        # anchor 없음 → 캐시 안 만듦(skip). stdout 비움 → 대시보드 ⑤ '캐시 미생성' graceful.
+        _err(f"skip: {e}")
+        sys.exit(2)
     except Exception as e:
         _err(f"오류: {type(e).__name__}: {e}")
         sys.exit(1)
