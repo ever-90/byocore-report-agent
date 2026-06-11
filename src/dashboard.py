@@ -56,6 +56,8 @@ _DEFAULT_BATCH_RESULT = os.path.join(
 # 품절·GEO제품명 매핑용 own_products (OWN_PRODUCTS_PATH override)
 _DEFAULT_OWN_PRODUCTS = os.path.join(_REPO_ROOT, "data", "own_products.json")
 _PCT_RE = re.compile(r"\(([-+]?[\d.]+%)\)")   # detail 에서 변동률(%)만 추출(절대가 제외)
+# ⑤ geo_effect 캐시 (bat [4.6] 가 일일 생성, GEO_EFFECT_CACHE_PATH override)
+_DEFAULT_GEO_EFFECT_CACHE = os.path.join(_REPO_ROOT, "data", "geo_effect_cache.json")
 
 
 # ---------------------------------------------------------------------------
@@ -361,7 +363,8 @@ def _build_price_alert_html(pa: dict | None) -> str:
 
 
 # ── ④ GEO 발행효과 (전사 + 제품별 after_n·cited_rate) ────────────────
-def _build_geo_effect_html(ba: dict | None, code2name: dict | None = None) -> str:
+def _build_geo_target_html(ba: dict | None, code2name: dict | None = None) -> str:
+    """④ GEO 발행효과(타겟측정) — geo_monitor.monitor_before_after 읽음(시간창 X)."""
     if ba is None:
         return ""
     code2name = code2name or {}
@@ -391,7 +394,63 @@ def _build_geo_effect_html(ba: dict | None, code2name: dict | None = None) -> st
             f'<div class="sales-detail">{_esc(detail)}</div></div>'
             f'<div class="sales-tier {cls}">{tier}</div></div>')
     rows_html = "".join(rows) if rows else '<div class="sales-meta">추적 제품 없음</div>'
-    return (f'<div class="section-wrap"><div class="section-title">GEO 발행효과</div>'
+    return (f'<div class="section-wrap"><div class="section-title">GEO 발행효과(타겟측정)</div>'
+            f'<div class="sales-meta">{meta}</div>'
+            f'<div class="sales-list">{rows_html}</div></div>')
+
+
+# ── ⑤ GEO 발행효과(시간창 A/B) — geo_effect 캐시 read ────────────────
+def _load_geo_effect_cache() -> dict | None:
+    """geo_effect 캐시 read(빌드 비용 0). 없음/파손 → None (graceful)."""
+    path = (os.getenv("GEO_EFFECT_CACHE_PATH") or "").strip() or _DEFAULT_GEO_EFFECT_CACHE
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _build_geo_window_html(rep: dict | None, code2name: dict | None = None) -> str:
+    """⑤ 시간창 before/after. 캐시 None → '캐시 미생성', 제품 None → '랜덤풀 샘플링 대기'.
+    ★효능 0·자사가 0 (인용률 %·pp만)."""
+    if rep is None:
+        return ('<div class="section-wrap">'
+                '<div class="section-title">GEO 발행효과(시간창 A/B)</div>'
+                '<div class="sales-meta">측정 대기 (캐시 미생성)</div></div>')
+    code2name = code2name or {}
+    base = rep.get("baseline") or {}
+    bb = (base.get("before") or {}).get("rate")
+    ba = (base.get("after")  or {}).get("rate")
+    if isinstance(bb, (int, float)) and isinstance(ba, (int, float)):
+        meta = _esc(f"전사 baseline {bb:.1f}% → {ba:.1f}% ({ba - bb:+.1f}pp)  앵커 {rep.get('publish_anchor','')}")
+    else:
+        meta = "전사 baseline 측정 대기"
+    rows = []
+    for p in rep.get("products") or []:
+        name = str(p.get("product", ""))
+        name_short = (name[:22] + "…") if len(name) > 22 else name
+        a_rate = (p.get("after") or {}).get("rate")
+        dpp, vbp = p.get("delta_pp"), p.get("vs_baseline_pp")
+        if a_rate is None:
+            detail, cls, tier = "측정 대기 (랜덤풀 샘플링 대기)", "stier-gray", "대기"
+        else:
+            parts = [f"after {a_rate:.1f}%"]
+            if dpp is not None:
+                parts.append(f"Δ{dpp:+.1f}pp")
+            if vbp is not None:
+                parts.append(f"vs전사 {vbp:+.1f}pp")
+            detail, cls, tier = " · ".join(parts), "stier-blue", "측정"
+        rows.append(
+            f'<div class="sales-row"><div class="sales-info">'
+            f'<div class="sales-name">{_esc(name_short)}</div>'
+            f'<div class="sales-detail">{_esc(detail)}</div></div>'
+            f'<div class="sales-tier {cls}">{tier}</div></div>')
+    rows_html = "".join(rows) if rows else '<div class="sales-meta">추적 제품 없음</div>'
+    return (f'<div class="section-wrap">'
+            f'<div class="section-title">GEO 발행효과(시간창 A/B)</div>'
             f'<div class="sales-meta">{meta}</div>'
             f'<div class="sales-list">{rows_html}</div></div>')
 
@@ -568,10 +627,18 @@ def build_dashboard_html(date: str) -> str:
     # ── ④ GEO 발행효과 (독립 try) ──
     geo_effect_section_html = ""
     try:
-        geo_effect_section_html = _build_geo_effect_html(
+        geo_target_section_html = _build_geo_target_html(
             geo_monitor.monitor_before_after(), code2name)
     except Exception:
-        geo_effect_section_html = ""
+        geo_target_section_html = ""
+
+    # ── ⑤ GEO 발행효과(시간창 A/B) — 캐시 read만(빌드 +0초) ──
+    geo_window_section_html = ""
+    try:
+        geo_window_section_html = _build_geo_window_html(
+            _load_geo_effect_cache(), code2name)
+    except Exception:
+        geo_window_section_html = ""
 
     # ── 7일 차트 데이터 (date-6 ~ date, 빈 날짜는 0) ─────────────────────
     d0           = datetime.date.fromisoformat(date)
@@ -749,7 +816,9 @@ def build_dashboard_html(date: str) -> str:
 
 {price_section_html}
 
-{geo_effect_section_html}
+{geo_target_section_html}
+
+{geo_window_section_html}
 
 <footer>마지막 갱신: {_esc(updated_kst)}</footer>
 

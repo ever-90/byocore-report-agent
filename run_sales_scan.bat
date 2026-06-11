@@ -186,6 +186,20 @@ if "%SRC%"=="0" (
 :STEP5
 
 REM ================================================================
+REM  [4.6] geo_effect 캐시 생성 (시간창 A/B — 무거운 3탭 read 하루 1회만)
+REM        대시보드가 직접 호출 안 하도록 캐시 JSON 으로 분리(빌드 +0초).
+REM        격리: && 없음. 실패해도 RC 미변경, 캐시 미생성이면 대시보드 ⑤ graceful.
+REM ================================================================
+echo [%date% %time%] [4.6] geo_effect cache start>>"%LOGFILE%"
+cd /d "%REPORT_DIR%"
+"%PYTHON%" -m src.collectors.geo_effect --publish-date 2026-06-08 > "%REPORT_DIR%\data\geo_effect_cache.json" 2>>"%LOGFILE%"
+if errorlevel 1 (
+    echo [%date% %time%] [4.6][WARN] geo_effect cache failed - dashboard shows cache-missing>>"%LOGFILE%"
+) else (
+    echo [%date% %time%] [4.6] geo_effect cache OK>>"%LOGFILE%"
+)
+
+REM ================================================================
 REM  [5] Telegram daily push (READ-ONLY alert — always runs, RC unchanged)
 REM ================================================================
 echo [%date% %time%] [5] Telegram push start>>"%LOGFILE%"

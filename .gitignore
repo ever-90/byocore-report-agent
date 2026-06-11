@@ -46,3 +46,4 @@ data/desc_backups/
 
 # GEO 시트 백업 (PERF_DAILY 등 쓰기 전 백업, 로컬)
 data/sheet_backups/
+data/geo_effect_cache.json
