@@ -18,11 +18,12 @@ import datetime
 import html as _html_mod
 import json
 import os
+import re
 import sys
 from decimal import Decimal
 
-from . import config  # noqa: F401 (하드코딩 방지 — 추후 config 경유 설정 확장용)
-from .collectors import cafe24_sales, geo_citation
+from . import config, price_alert  # noqa: F401
+from .collectors import cafe24_sales, geo_citation, geo_monitor
 from .reporter import (
     KST,
     _cite_rate_trend,
@@ -51,6 +52,10 @@ _DEFAULT_BATCH_RESULT = os.path.join(
     os.path.dirname(_REPO_ROOT),           # C:\Users\Administrator
     "byocore-supervisor-agent", "data", "batch_result.json",
 )
+
+# 품절·GEO제품명 매핑용 own_products (OWN_PRODUCTS_PATH override)
+_DEFAULT_OWN_PRODUCTS = os.path.join(_REPO_ROOT, "data", "own_products.json")
+_PCT_RE = re.compile(r"\(([-+]?[\d.]+%)\)")   # detail 에서 변동률(%)만 추출(절대가 제외)
 
 
 # ---------------------------------------------------------------------------
@@ -268,6 +273,129 @@ def _build_prescription_html(batch: dict | None) -> str:
     )
 
 
+def _truthy(v) -> bool:
+    return str(v).strip().upper() in ("T", "TRUE", "Y", "1", "품절")
+
+
+def _load_own_products() -> list | None:
+    path = (os.getenv("OWN_PRODUCTS_PATH") or "").strip() or _DEFAULT_OWN_PRODUCTS
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else None
+    except Exception:
+        return None
+
+
+# ── ② 품절 현황 ──────────────────────────────────────────────────────
+def _build_soldout_html(products: list | None) -> str:
+    """품절 현황. 판매중품절(display=T AND sold_out=T) 빨강 강조. ★가격 미렌더."""
+    if products is None:
+        return ""   # own_products 없음 → 섹션 숨김 (graceful)
+    soldout = [p for p in products if _truthy(p.get("sold_out"))]
+    on_sale = [p for p in soldout if _truthy(p.get("display"))]
+    if not soldout:
+        return ('<div class="section-wrap"><div class="section-title">품절 현황</div>'
+                '<div class="sales-meta">품절 없음 ✓</div></div>')
+    ordered = on_sale + [p for p in soldout if not _truthy(p.get("display"))]
+    rows = []
+    for p in ordered:
+        name_full  = str(p.get("product_name", ""))
+        name_short = (name_full[:24] + "…") if len(name_full) > 24 else name_full
+        on  = _truthy(p.get("display"))
+        rows.append(
+            f'<div class="sales-row"><div class="sales-info">'
+            f'<div class="sales-name">{_esc(name_short)}</div></div>'
+            f'<div class="sales-tier {"stier-red" if on else "stier-gray"}">'
+            f'{"판매중" if on else "숨김"}</div></div>'
+        )
+    meta = f"품절 {len(soldout)}개 · 판매중품절 {len(on_sale)}개"
+    return (f'<div class="section-wrap"><div class="section-title">품절 현황</div>'
+            f'<div class="sales-meta">{_esc(meta)}</div>'
+            f'<div class="sales-list">{"".join(rows)}</div></div>')
+
+
+# ── ③ 가격경쟁 추적 (★자사가 미렌더 — 제품명·유형·변동률%만) ──────────
+def _load_price_alert() -> dict | None:
+    try:
+        return price_alert.run(dry=True)   # dry=True → 이력 미기록(쓰기 0)
+    except Exception:
+        return None
+
+
+def _build_price_alert_html(pa: dict | None) -> str:
+    if pa is None:
+        return ""   # scan_result 없음 → 섹션 숨김
+    st  = pa.get("absolute_state") or {}
+    new = pa.get("absolute") or []
+    dlt = pa.get("delta") or []
+    a1, a2 = int(st.get("A1", 0)), int(st.get("A2", 0))
+    compared = pa.get("compared_to")
+    badges = (f'<span class="badge badge-orange">가격역전 A1 {a1}</span>'
+              f'<span class="badge badge-red">완전역전 A2 {a2}</span>')
+    base = f"비교기준 {compared}" if compared else "이력 1일차(비교 익일부터)"
+    meta = _esc(f"{base} · 신규전이 {len(new)} · 변동 {len(dlt)}")
+    rows = []
+    for a in new:                          # 신규 전이 — 이름+유형만(절대가 X)
+        rows.append(
+            f'<div class="sales-row"><div class="sales-info">'
+            f'<div class="sales-name">{_esc(str(a.get("제품명",""))[:22])}</div>'
+            f'<div class="sales-detail">신규 {_esc(a.get("kind",""))}</div></div>'
+            f'<div class="sales-tier stier-red">신규</div></div>')
+    for a in dlt[:5]:                      # 변동 Top5 — 변동률(%)만(절대가 X)
+        m = _PCT_RE.search(str(a.get("detail", "")))
+        pct = m.group(1) if m else ""
+        rows.append(
+            f'<div class="sales-row"><div class="sales-info">'
+            f'<div class="sales-name">{_esc(str(a.get("제품명",""))[:22])}</div>'
+            f'<div class="sales-detail">{_esc(a.get("kind",""))} {_esc(pct)}</div></div>'
+            f'<div class="sales-tier stier-orange">변동</div></div>')
+    rows_html = "".join(rows) if rows else \
+        '<div class="sales-meta">신규 알림 없음 (전이 0 · 변동 0)</div>'
+    return (f'<div class="section-wrap"><div class="section-title">가격경쟁 추적</div>'
+            f'<div class="risk-badges">{badges}</div>'
+            f'<div class="sales-meta">{meta}</div>'
+            f'<div class="sales-list">{rows_html}</div></div>')
+
+
+# ── ④ GEO 발행효과 (전사 + 제품별 after_n·cited_rate) ────────────────
+def _build_geo_effect_html(ba: dict | None, code2name: dict | None = None) -> str:
+    if ba is None:
+        return ""
+    code2name = code2name or {}
+    comp  = ba.get("company") or {}
+    prods = ba.get("products") or []
+    meta = "전사 인용률 측정 대기"
+    b = (comp.get("baseline") or {}).get("citation_rate")
+    l = (comp.get("latest")   or {}).get("citation_rate")
+    d = comp.get("delta")
+    if isinstance(b, (int, float)) and isinstance(l, (int, float)):
+        meta = _esc(f"전사 {b:.1f}% → {l:.1f}% ({d:+.1f}pp)")
+    rows = []
+    for p in prods:
+        code = str(p.get("product_code", ""))
+        name = code2name.get(code, code)
+        name_short = (name[:22] + "…") if len(name) > 22 else name
+        n, rate = p.get("after_n", 0), p.get("after_cited_rate")
+        if n == 0:
+            detail, cls, tier = "측정 대기", "stier-gray", "대기"
+        elif not rate:   # 0 또는 0.0 → 측정됐으나 미인용
+            detail, cls, tier = f"after {n}건 · 인용 0% (측정됨·미인용)", "stier-blue", "측정"
+        else:
+            detail, cls, tier = f"after {n}건 · 인용 {rate:.1f}%", "stier-blue", "측정"
+        rows.append(
+            f'<div class="sales-row"><div class="sales-info">'
+            f'<div class="sales-name">{_esc(name_short)}</div>'
+            f'<div class="sales-detail">{_esc(detail)}</div></div>'
+            f'<div class="sales-tier {cls}">{tier}</div></div>')
+    rows_html = "".join(rows) if rows else '<div class="sales-meta">추적 제품 없음</div>'
+    return (f'<div class="section-wrap"><div class="section-title">GEO 발행효과</div>'
+            f'<div class="sales-meta">{meta}</div>'
+            f'<div class="sales-list">{rows_html}</div></div>')
+
+
 def _yesterday_kst() -> str:
     now_kst = datetime.datetime.now(KST)
     return (now_kst.date() - datetime.timedelta(days=1)).isoformat()
@@ -415,6 +543,35 @@ def build_dashboard_html(date: str) -> str:
             '<div class="sales-meta" style="color:var(--warn)">처방 섹션 오류</div>'
             '</div>'
         )
+
+    # ── ② 품절 (독립 try) ──
+    soldout_section_html, own_products = "", None
+    try:
+        own_products = _load_own_products()
+        soldout_section_html = _build_soldout_html(own_products)
+    except Exception:
+        soldout_section_html = ""
+    code2name = {}
+    if isinstance(own_products, list):
+        for p in own_products:
+            c = str(p.get("product_code", "")).strip()
+            if c:
+                code2name[c] = str(p.get("product_name", ""))
+
+    # ── ③ 가격경쟁 (독립 try) ──
+    price_section_html = ""
+    try:
+        price_section_html = _build_price_alert_html(_load_price_alert())
+    except Exception:
+        price_section_html = ""
+
+    # ── ④ GEO 발행효과 (독립 try) ──
+    geo_effect_section_html = ""
+    try:
+        geo_effect_section_html = _build_geo_effect_html(
+            geo_monitor.monitor_before_after(), code2name)
+    except Exception:
+        geo_effect_section_html = ""
 
     # ── 7일 차트 데이터 (date-6 ~ date, 빈 날짜는 0) ─────────────────────
     d0           = datetime.date.fromisoformat(date)
@@ -587,6 +744,12 @@ def build_dashboard_html(date: str) -> str:
 {sales_section_html}
 
 {prescription_section_html}
+
+{soldout_section_html}
+
+{price_section_html}
+
+{geo_effect_section_html}
 
 <footer>마지막 갱신: {_esc(updated_kst)}</footer>
 
