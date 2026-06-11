@@ -155,6 +155,26 @@ if exist "%BATCH_RESULT%" (
 
 :END_ALL
 REM ================================================================
+REM  [4b] GEO measurement sync (GEO_Product_Measure -> publish_tracking)
+REM       READ sheet -> append openai 실측. Isolated: failure does NOT
+REM       change RC and does NOT block [5]. Always runs (scan-independent).
+REM ================================================================
+echo [%date% %time%] [4b] GEO sync start>>"%LOGFILE%"
+cd /d "%SUPERVISOR_DIR%"
+if errorlevel 1 (
+    echo [%date% %time%] [4b][WARN] Cannot cd to SUPERVISOR_DIR - sync skipped>>"%LOGFILE%"
+    cd /d "%REPORT_DIR%"
+) else (
+    "%PYTHON%" -m src.supervisor --sync-geo --sheet 18rrHs_ifXSxZlY3mboRftCXO3KRl3JRBnZ2P-c2ufZA >>"%LOGFILE%" 2>&1
+    if errorlevel 1 (
+        echo [%date% %time%] [4b][WARN] GEO sync failed - ignored ^(does not block push^)>>"%LOGFILE%"
+    ) else (
+        echo [%date% %time%] [4b] GEO sync OK>>"%LOGFILE%"
+    )
+    cd /d "%REPORT_DIR%"
+)
+
+REM ================================================================
 REM  [5] Telegram daily push (READ-ONLY alert — always runs, RC unchanged)
 REM ================================================================
 echo [%date% %time%] [5] Telegram push start>>"%LOGFILE%"
