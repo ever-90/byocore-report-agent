@@ -154,13 +154,36 @@ if exist "%BATCH_RESULT%" (
 )
 
 :END_ALL
-REM [4.5] GEO sync (READ-ONLY, independent - failure never blocks [5])
+REM ================================================================
+REM  [4.5] GEO sync (READ-ONLY, independent - failure never blocks [5])
+REM        .env 단일출처: GEO_SHEET_ID 를 로컬 임시변수(_GEO_SID)로만 읽어
+REM        --sheet 로 그 자리에서 전달. 전역 set 안 함(후속 env 오염 0).
+REM        && 제거 -> if/goto 분기로 단계격리 복원.
+REM ================================================================
 echo [%date% %time%] [4.5] GEO sync start>>"%LOGFILE%"
-for /f "tokens=2 delims==" %%g in ('findstr /b "GEO_SHEET_ID=" "%SALES_DIR%\.env"') do set "GEO_SHEET_ID=%%g"
-cd /d "%SUPERVISOR_DIR%" && "%PYTHON%" -m src.supervisor --sync-geo >>"%LOGFILE%" 2>&1
-if errorlevel 1 echo [%date% %time%] [4.5][WARN] GEO sync failed - ignored>>"%LOGFILE%"
-if not errorlevel 1 echo [%date% %time%] [4.5] GEO sync OK>>"%LOGFILE%"
+set "_GEO_SID="
+for /f "tokens=2 delims==" %%g in ('findstr /b "GEO_SHEET_ID=" "%SALES_DIR%\.env"') do set "_GEO_SID=%%g"
+cd /d "%SUPERVISOR_DIR%"
+if errorlevel 1 (
+    echo [%date% %time%] [4.5][WARN] Cannot cd to SUPERVISOR_DIR - sync skipped>>"%LOGFILE%"
+    cd /d "%REPORT_DIR%"
+    goto :STEP5
+)
+if not defined _GEO_SID (
+    echo [%date% %time%] [4.5][WARN] GEO_SHEET_ID not found in .env - sync skipped>>"%LOGFILE%"
+    cd /d "%REPORT_DIR%"
+    goto :STEP5
+)
+"%PYTHON%" -m src.supervisor --sync-geo --sheet %_GEO_SID% >>"%LOGFILE%" 2>&1
+set "SRC=%ERRORLEVEL%"
 cd /d "%REPORT_DIR%"
+set "_GEO_SID="
+if "%SRC%"=="0" (
+    echo [%date% %time%] [4.5] GEO sync OK>>"%LOGFILE%"
+) else (
+    echo [%date% %time%] [4.5][WARN] GEO sync failed ^(SRC=%SRC%^) - ignored ^(does not block push^)>>"%LOGFILE%"
+)
+:STEP5
 
 REM ================================================================
 REM  [5] Telegram daily push (READ-ONLY alert — always runs, RC unchanged)
