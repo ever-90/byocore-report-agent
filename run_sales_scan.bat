@@ -8,6 +8,7 @@ REM      (Naver API ~37 calls + GEO sheet, approx 3-5 min)
 REM  [2] Report dashboard rebuild -> docs/index.html
 REM  [3] git add/commit/push -> GitHub Pages auto deploy
 REM  [4] Supervisor batch INCREMENTAL -> prescribe new/changed risks only (cost gate)
+REM  [5] Telegram daily push -> scan summary to phone (read-only alert)
 REM
 REM  Log: logs\sales_scan_YYYYMMDD.log
 REM
@@ -153,6 +154,17 @@ if exist "%BATCH_RESULT%" (
 )
 
 :END_ALL
+REM ================================================================
+REM  [5] Telegram daily push (READ-ONLY alert — always runs, RC unchanged)
+REM ================================================================
+echo [%date% %time%] [5] Telegram push start>>"%LOGFILE%"
+"C:\Users\Administrator\AppData\Local\Programs\Python\Python313\python.exe" "C:\Users\Administrator\byocore-telegram-bot\push_daily.py" >>"%LOGFILE%" 2>&1
+if errorlevel 1 (
+    echo [%date% %time%] [5][WARN] Telegram push failed - check token/network>>"%LOGFILE%"
+) else (
+    echo [%date% %time%] [5] Telegram push OK>>"%LOGFILE%"
+)
+
 echo ============================================================>>"%LOGFILE%"
 echo [%date% %time%] run_sales_scan.bat end (exit %RC%)>>"%LOGFILE%"
 
