@@ -34,6 +34,9 @@ from .. import cafe24_auth, config
 
 AI_START = "<!-- BYOCORE_AI_TEXT_START -->"
 AI_END = "<!-- BYOCORE_AI_TEXT_END -->"
+# ★ JSON-LD(schema.org) 전용 마커 — AI 텍스트 마커와 독립(상호 미접촉).
+SCHEMA_START = "<!-- BYOCORE_GEO_SCHEMA_START -->"
+SCHEMA_END = "<!-- BYOCORE_GEO_SCHEMA_END -->"
 REQUEST_TIMEOUT = 20
 BACKUP_DIR = Path(__file__).resolve().parents[2] / "data" / "desc_backups"
 
@@ -159,6 +162,68 @@ def deploy_detail(product_no: int, html_detail: str, dry_run: bool = True) -> di
     return result
 
 
+def merge_schema(existing: str, jsonld: str) -> str:
+    """
+    ★ JSON-LD 블록을 GEO_SCHEMA 마커로 replace-or-append (멱등).
+    - AI 텍스트 마커(AI_START/END)는 절대 건드리지 않음 → 보이는 텍스트·이미지 무변.
+    - 기존 schema 블록 존재 → 그 블록만 교체. 없으면 → 기존 끝에 추가.
+    """
+    block = f'{SCHEMA_START}\n<script type="application/ld+json">\n{jsonld}\n</script>\n{SCHEMA_END}'
+    if SCHEMA_START in existing and SCHEMA_END in existing:
+        i = existing.index(SCHEMA_START)
+        j = existing.index(SCHEMA_END) + len(SCHEMA_END)
+        return existing[:i] + block + existing[j:]
+    sep = "" if existing.endswith("\n") or not existing else "\n"
+    return existing + sep + block
+
+
+def deploy_schema(product_no: int, jsonld: str, dry_run: bool = True) -> dict:
+    """
+    FAQPage 등 JSON-LD(schema.org)를 description 에 GEO_SCHEMA 마커로 주입. dry_run 기본.
+    ★ deploy_detail 과 동일 안전장치(GET→merge→백업→PUT). AI 블록·이미지 미접촉.
+    반환: {product_no, status, backup_path, applied, error, product_name, 기존_길이, 적용후_길이, 이미지_보존, AI블록_보존}
+    """
+    result = {"product_no": product_no, "status": None, "backup_path": None,
+              "applied": False, "error": None}
+    if not str(jsonld or "").strip():
+        result["status"] = "거부"; result["error"] = "jsonld 비어있음 (주입 안 함)"; return result
+
+    try:
+        orig, name = _get_description(product_no)
+    except Exception as e:
+        result["status"] = "실패"; result["error"] = f"description GET 실패: {type(e).__name__}: {e}"; return result
+
+    new_desc = merge_schema(orig, jsonld)
+    result["product_name"] = name
+    result["기존_길이"] = len(orig)
+    result["적용후_길이"] = len(new_desc)
+    result["이미지_보존"] = orig.count("<img") <= new_desc.count("<img")
+    # ★ AI 텍스트 블록 무변 검증 (schema 주입이 AI 마커를 건드리지 않았는지)
+    def _ai_block(s: str) -> str:
+        if AI_START in s and AI_END in s:
+            return s[s.index(AI_START): s.index(AI_END) + len(AI_END)]
+        return ""
+    result["AI블록_보존"] = (_ai_block(orig) == _ai_block(new_desc))
+
+    if dry_run:
+        result["status"] = "dry_run (승인/실행 안 함 — 변경계획만)"
+        return result
+
+    try:
+        result["backup_path"] = _save_backup(product_no, orig)
+    except Exception as e:
+        result["status"] = "실패"; result["error"] = f"백업 저장 실패(주입 중단): {type(e).__name__}: {e}"; return result
+    try:
+        r = _put_description(product_no, new_desc)
+    except Exception as e:
+        result["status"] = "실패"; result["error"] = f"PUT 예외: {type(e).__name__}: {e} (백업 보존: {result['backup_path']})"; return result
+    if r.status_code >= 400:
+        result["status"] = "실패"; result["error"] = f"PUT {r.status_code}: {r.text[:200]} (백업 보존: {result['backup_path']})"; return result
+    result["applied"] = True
+    result["status"] = "발행됨"
+    return result
+
+
 def rollback(product_no: int, backup_file: str) -> dict:
     """백업 파일의 description 으로 PUT 복원."""
     result = {"product_no": product_no, "status": None, "applied": False, "error": None}
@@ -188,15 +253,19 @@ def _cli() -> None:
     ap = argparse.ArgumentParser(prog="cafe24_deploy", description="Cafe24 description WRITE (반자동).")
     ap.add_argument("--product-no", type=int, required=True)
     ap.add_argument("--html-file", help="추가할 AI 텍스트(html_detail) 파일 경로")
+    ap.add_argument("--schema-file", help="주입할 JSON-LD(schema.org) 파일 경로 (GEO_SCHEMA 마커)")
     ap.add_argument("--apply", action="store_true", help="실제 PUT (없으면 dry-run)")
     ap.add_argument("--rollback-file", help="롤백할 백업 JSON 경로")
     args = ap.parse_args()
 
     if args.rollback_file:
         res = rollback(args.product_no, args.rollback_file)
+    elif args.schema_file:
+        jsonld = Path(args.schema_file).read_text(encoding="utf-8")
+        res = deploy_schema(args.product_no, jsonld, dry_run=not args.apply)
     else:
         if not args.html_file:
-            print(json.dumps({"status": "실패", "error": "--html-file 필요"}, ensure_ascii=False))
+            print(json.dumps({"status": "실패", "error": "--html-file 또는 --schema-file 필요"}, ensure_ascii=False))
             sys.exit(1)
         html = Path(args.html_file).read_text(encoding="utf-8")
         res = deploy_detail(args.product_no, html, dry_run=not args.apply)
