@@ -83,6 +83,33 @@ def _latest_published_at() -> Optional[str]:
              if not str(no).startswith("_") and isinstance(e, dict) and e.get("published_at")]
     return max(dates) if dates else None
 
+
+def _published_at_by_no() -> Dict[str, str]:
+    """publish_tracking → {product_no(str): published_at 날짜}. 로컬 read(시트 0)."""
+    raw = (config.get("PUBLISH_TRACKING_PATH") or "").strip()
+    path = Path(raw) if raw else _DEFAULT_TRACKING
+    try:
+        t = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(t, dict):
+        return {}
+    return {str(no): str(e.get("published_at", ""))[:10]
+            for no, e in t.items()
+            if not str(no).startswith("_") and isinstance(e, dict) and e.get("published_at")}
+
+
+def _anchor_for_product(p: dict, no_map: Dict[str, str]) -> Optional[str]:
+    """제품의 product_no 리스트 중 tracking 매칭되는 첫 발행일(YYYY-MM-DD). 없으면 None."""
+    nos = p.get("product_no") or []
+    if not isinstance(nos, list):
+        nos = [nos]
+    for n in nos:
+        if str(n) in no_map:
+            return no_map[str(n)]
+    return None
+
+
 _SPACE_RE = re.compile(r"\s+")
 
 
@@ -276,24 +303,54 @@ def build_report(
     products: List[dict],
     qmap: Dict[str, str],
     rows: List[dict],
+    per_product_anchor: bool = False,
+    no_map: Optional[Dict[str, str]] = None,
 ) -> dict:
-    before_rows, after_rows = _split_by_date(rows, publish_date)
+    """
+    발행효과 리포트. per_product_anchor=True 면 제품마다 자기 published_at 으로 before/after 분할
+    (한 제품 발행이 다른 제품 윈도를 안 비움). 전사 baseline 은 min(제품 anchor) 기준 → ⑤ 전사 줄 유지.
+    per_product_anchor=False 면 publish_date 단일 anchor(back-compat).
+    """
+    no_map = no_map or {}
 
-    base_before = _overall_citation(before_rows)
-    base_after = _overall_citation(after_rows)
+    # 전사 baseline 기준일: 제품별 모드면 min(제품 anchor) — 최근 재발행이 전사 줄 안 비게.
+    base_anchor = publish_date
+    if per_product_anchor:
+        p_anchors = [a for p in products if (a := _anchor_for_product(p, no_map))]
+        base_anchor = min(p_anchors) if p_anchors else publish_date
+
+    base_before_rows, base_after_rows = _split_by_date(rows, base_anchor)
+    base_before = _overall_citation(base_before_rows)
+    base_after = _overall_citation(base_after_rows)
 
     prod_reports: List[dict] = []
     for p in products:
+        anchor_p = _anchor_for_product(p, no_map) if per_product_anchor else publish_date
+
+        if not anchor_p:   # 제품별 모드인데 발행 추적 없음 → 윈도 산출 불가
+            prod_reports.append({
+                "product": p["product"], "product_no": p.get("product_no"),
+                "keywords": p["keywords"], "before": None, "after": None,
+                "delta_pp": None, "vs_baseline_pp": None,
+                "warning": "발행 추적 없음(publish_tracking 미등록)",
+                "published_at": None,
+            })
+            continue
+
+        before_rows, after_rows = _split_by_date(rows, anchor_p)
         b = _product_citation(p["keywords"], qmap, before_rows)
         a = _product_citation(p["keywords"], qmap, after_rows)
+
+        # vs_baseline: 같은 anchor 기준 전사 after (사과 대 사과)
+        base_after_p = _overall_citation(after_rows)["rate"]
 
         delta_pp = (
             round(a["rate"] - b["rate"], 1)
             if a["rate"] is not None and b["rate"] is not None else None
         )
         vs_base_pp = (
-            round(a["rate"] - base_after["rate"], 1)
-            if a["rate"] is not None and base_after["rate"] is not None else None
+            round(a["rate"] - base_after_p, 1)
+            if a["rate"] is not None and base_after_p is not None else None
         )
 
         # 관찰기간 부족 경고 (색인 지연 인지)
@@ -312,25 +369,27 @@ def build_report(
             "delta_pp": delta_pp,
             "vs_baseline_pp": vs_base_pp,
             "warning": warn,
+            "published_at": anchor_p,          # ★신규(additive) — 제품별 발행일
         })
 
     return {
-        "publish_anchor": publish_date,
+        "publish_anchor": base_anchor,         # 전사 기준일(제품별 모드면 min) — ⑤ 호환
+        "per_product_anchor": per_product_anchor,   # ★신규(additive)
         "windows": {
-            "before": f"measured_at < {publish_date}",
-            "after": f"measured_at >= {publish_date}",
+            "before": f"measured_at < {base_anchor}",
+            "after": f"measured_at >= {base_anchor}",
         },
         "data_span": {
             "total_rows": len(rows),
-            "before_rows": len(before_rows),
-            "after_rows": len(after_rows),
+            "before_rows": len(base_before_rows),
+            "after_rows": len(base_after_rows),
         },
         "baseline": {"before": base_before, "after": base_after},
         "products": prod_reports,
         "notes": [
             "측정 엔진 미변경(READ-ONLY). openai gpt-4o web_search 기반 일일 측정 시트 재사용.",
-            "색인 지연(발행→AI 색인 수일~수주) — after 표본 적으면 효과 판단 보류.",
-            "baseline = 구간 전체 중립질의 인용률(intent 최신행 dedup).",
+            "제품별 anchor: 각 제품 published_at 기준 before/after (한 제품 발행이 타 제품 윈도 불간섭).",
+            "전사 baseline = min(제품 anchor) 기준 중립질의 인용률(intent 최신행 dedup).",
             "rate=None 은 거짓값이 아니라 '해당 구간 측정 없음'.",
         ],
     }
@@ -342,9 +401,11 @@ def run(publish_date: Optional[str] = None, products: Optional[List[dict]] = Non
     publish_date 생략 시 publish_tracking 최근 published_at 자동 사용.
     발행이력 전무(anchor None) → ValueError (어제날짜 억지 anchor 안 잡음 — 가짜 A/B 방지).
     """
+    explicit = bool(publish_date)   # --publish-date 명시 = 전 제품 단일 anchor(back-compat)
+    no_map = _published_at_by_no()
     if not publish_date:
-        publish_date = _latest_published_at()
-    if not publish_date:
+        publish_date = _latest_published_at()   # 폴백/전사 기준
+    if not publish_date and not no_map:
         raise ValueError(
             "발행 anchor 없음: publish_tracking 에 published_at 이 없습니다 "
             "(--publish-date 로 명시하거나 발행 추적 후 재시도)."
@@ -352,7 +413,8 @@ def run(publish_date: Optional[str] = None, products: Optional[List[dict]] = Non
     ss = _open_spreadsheet()
     qmap = _fetch_query_map(ss)
     rows = _fetch_analysis_rows(ss)
-    return build_report(publish_date, products or DEFAULT_PRODUCT_QUERIES, qmap, rows)
+    return build_report(publish_date, products or DEFAULT_PRODUCT_QUERIES, qmap, rows,
+                        per_product_anchor=not explicit, no_map=no_map)
 
 
 # ---------------------------------------------------------------------------
